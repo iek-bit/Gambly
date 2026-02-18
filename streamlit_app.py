@@ -25,6 +25,7 @@ from storage import (
     delete_blackjack_lan_table,
     delete_account,
     find_blackjack_lan_table_for_player,
+    force_acquire_account_session,
     get_account_admin_status,
     get_account_stats,
     get_account_settings,
@@ -1169,6 +1170,7 @@ def init_state():
     st.session_state.setdefault("settings_control_confirm_before_bet", True)
     st.session_state.setdefault("settings_loaded_for_account", None)
     st.session_state.setdefault("persisted_ui_settings_snapshot", None)
+    st.session_state.setdefault("pending_force_sign_in_account", None)
 
 
 def _current_session_id():
@@ -1195,6 +1197,7 @@ def _sign_out_current_account(session_notice=None):
     st.session_state["redirect_to_home"] = False
     st.session_state["settings_loaded_for_account"] = None
     st.session_state["persisted_ui_settings_snapshot"] = None
+    st.session_state["pending_force_sign_in_account"] = None
     st.session_state["blackjack_lan_spectate_table_id"] = None
     st.session_state["blackjack_lan_spectate_password"] = ""
     end_guest_session(set_completion_message=False)
@@ -1626,6 +1629,7 @@ def auth_ui():
 
         if submitted:
             account = account.strip()
+            st.session_state["pending_force_sign_in_account"] = None
             if not account:
                 st.error("Username is required.")
                 return
@@ -1647,6 +1651,7 @@ def auth_ui():
                 if not acquired:
                     if reason == "in_use":
                         st.error("That account is already signed in from another session.")
+                        st.session_state["pending_force_sign_in_account"] = account
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
@@ -1663,6 +1668,7 @@ def auth_ui():
                 if not acquired:
                     if reason == "in_use":
                         st.error("That account is already signed in from another session.")
+                        st.session_state["pending_force_sign_in_account"] = account
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
@@ -1675,6 +1681,31 @@ def auth_ui():
                 st.rerun()
                 return
             st.error("Incorrect password.")
+
+        pending_force_account = st.session_state.get("pending_force_sign_in_account")
+        if pending_force_account:
+            st.warning(f"'{pending_force_account}' appears active elsewhere.")
+            if st.button(
+                "Force sign in and end other session",
+                key="auth_force_sign_in",
+                use_container_width=True,
+            ):
+                forced, reason = force_acquire_account_session(pending_force_account, _current_session_id())
+                if not forced:
+                    if reason == "account_not_found":
+                        st.error("Account no longer exists.")
+                    else:
+                        st.error("Could not force sign in. Please try again.")
+                    return
+                st.session_state["current_account"] = pending_force_account
+                st.session_state["settings_loaded_for_account"] = None
+                st.session_state["redirect_to_home"] = True
+                st.session_state["show_auth_flow"] = False
+                st.session_state["auth_flow_mode"] = None
+                st.session_state["pending_force_sign_in_account"] = None
+                st.success(f"Signed in as {pending_force_account}.")
+                st.rerun()
+                return
 
     if flow_mode == "create_account":
         with st.form("auth_create_account_form"):

@@ -1704,6 +1704,22 @@ def acquire_account_session(name, session_id, ttl_seconds=DEFAULT_ACCOUNT_SESSIO
         return True, "acquired"
 
 
+def force_acquire_account_session(name, session_id):
+    normalized_session_id = _normalize_session_id(session_id)
+    if normalized_session_id is None:
+        return False, "invalid_session"
+
+    now_epoch = time.time()
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        if name not in data["accounts"]:
+            return False, "account_not_found"
+        sessions = data.setdefault("active_sessions", {})
+        sessions[name] = {"session_id": normalized_session_id, "last_seen_epoch": now_epoch}
+        _write_data_unlocked(data)
+        return True, "acquired"
+
+
 def release_account_session(name, session_id):
     normalized_session_id = _normalize_session_id(session_id)
     if normalized_session_id is None:
