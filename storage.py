@@ -51,6 +51,8 @@ SUPABASE_TABLE_DEFAULT = "app_state"
 SUPABASE_STATE_ROW_ID = 1
 _in_process_write_lock = threading.RLock()
 _storage_backend_cache = None
+_state_read_cache = None
+_SUPABASE_READ_CACHE_TTL_SECONDS = 0.35
 
 
 def _default_data():
@@ -1183,6 +1185,44 @@ def _get_storage_backend():
     return _storage_backend_cache
 
 
+def _invalidate_state_read_cache():
+    global _state_read_cache
+    _state_read_cache = None
+
+
+def _get_local_accounts_mtime_unlocked():
+    try:
+        return os.path.getmtime(ACCOUNTS_FILE)
+    except FileNotFoundError:
+        return None
+
+
+def _is_cached_state_valid_unlocked(backend):
+    if not isinstance(_state_read_cache, dict):
+        return False
+    cached_backend_type = _state_read_cache.get("backend_type")
+    backend_type = backend.get("type")
+    if cached_backend_type != backend_type:
+        return False
+    if backend_type == "local":
+        return _state_read_cache.get("local_mtime") == _get_local_accounts_mtime_unlocked()
+    if backend_type == "supabase":
+        loaded_epoch = float(_state_read_cache.get("loaded_epoch", 0.0))
+        return (time.time() - loaded_epoch) <= _SUPABASE_READ_CACHE_TTL_SECONDS
+    return False
+
+
+def _set_state_read_cache_unlocked(backend, data):
+    global _state_read_cache
+    backend_type = backend.get("type")
+    _state_read_cache = {
+        "backend_type": backend_type,
+        "loaded_epoch": time.time(),
+        "local_mtime": _get_local_accounts_mtime_unlocked() if backend_type == "local" else None,
+        "data": deepcopy(data),
+    }
+
+
 def _supabase_request(method, path, payload=None, extra_headers=None):
     backend = _get_storage_backend()
     if backend.get("type") != "supabase":
@@ -1306,6 +1346,7 @@ def _write_data_unlocked(data):
     backend = _get_storage_backend()
     if backend.get("type") == "supabase":
         _write_supabase_state_unlocked(data)
+        _invalidate_state_read_cache()
         return
 
     destination = os.path.abspath(ACCOUNTS_FILE)
@@ -1321,6 +1362,7 @@ def _write_data_unlocked(data):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+    _invalidate_state_read_cache()
 
 
 def _write_data(data):
@@ -1412,30 +1454,38 @@ def _normalize_loaded_data(loaded):
     return data
 
 
-def _load_data_unlocked():
+def _load_data_unlocked(use_cache=True):
     backend = _get_storage_backend()
+    if use_cache and _is_cached_state_valid_unlocked(backend):
+        return deepcopy(_state_read_cache.get("data"))
     try:
         if backend.get("type") == "supabase":
             loaded = _read_supabase_state_unlocked()
             if loaded is None:
+                _set_state_read_cache_unlocked(backend, None)
                 return None
-            return _normalize_loaded_data(loaded)
+            normalized = _normalize_loaded_data(loaded)
+            _set_state_read_cache_unlocked(backend, normalized)
+            return deepcopy(normalized)
         else:
             loaded = _read_local_data_unlocked()
-        return _normalize_loaded_data(loaded)
+        normalized = _normalize_loaded_data(loaded)
+        _set_state_read_cache_unlocked(backend, normalized)
+        return deepcopy(normalized)
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        _set_state_read_cache_unlocked(backend, None)
         return None
 
 
 def _load_data():
-    data = _load_data_unlocked()
+    data = _load_data_unlocked(use_cache=True)
     if data is None:
         return _default_data()
     return data
 
 
 def _load_data_for_write_unlocked():
-    data = _load_data_unlocked()
+    data = _load_data_unlocked(use_cache=False)
     if data is None:
         return _default_data()
     return data
