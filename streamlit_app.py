@@ -442,16 +442,26 @@ def _fragment_or_passthrough(func):
 
 
 def _fast_rerun(force=False):
-    should_force = bool(force) or st.session_state.get("active_action") == "Blackjack"
-    if not should_force:
-        return
     rerun_func = getattr(st, "rerun", None)
     if not callable(rerun_func):
         return
     try:
-        rerun_func(scope="fragment")
+        if force:
+            rerun_func()
+        else:
+            rerun_func(scope="fragment")
     except Exception:
         rerun_func()
+
+
+def _schedule_non_blocking_rerun(interval_ms, key):
+    autorefresh_func = getattr(st, "autorefresh", None)
+    if callable(autorefresh_func):
+        try:
+            autorefresh_func(interval=max(250, int(interval_ms)), key=str(key))
+            return
+        except Exception:
+            pass
 
 
 def _svg_background_uri(svg: str) -> str:
@@ -4345,8 +4355,10 @@ def blackjack_ui():
             and seconds_left is not None
             and seconds_left > 0
         ):
-            time.sleep(1.0)
-            _fast_rerun()
+            _schedule_non_blocking_rerun(
+                1000,
+                key=f"blackjack_lan_timer_autorefresh_{table_id}",
+            )
         return
 
     if round_state is None:
