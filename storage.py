@@ -906,6 +906,11 @@ def _blackjack_lan_enforce_timeouts_unlocked(data, lan_state):
         _blackjack_lan_enforce_timeout_for_table_unlocked(data, table, settings)
 
 
+def _persist_if_changed_unlocked(data, before_data):
+    if data != before_data:
+        _write_data_unlocked(data)
+
+
 def _blackjack_lan_finish_round_unlocked(data, table):
     while _blackjack_hand_total(table.get("dealer_cards", [])) < BLACKJACK_DEALER_STAND_TOTAL:
         table["dealer_cards"].append(_blackjack_draw_card_from_table(table))
@@ -1801,20 +1806,22 @@ def record_game_result(name, buy_in, payout, won, game_type=None):
 def get_blackjack_lan_tables():
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_blackjack_lan_state(data.get("blackjack_lan", {}))
         _blackjack_lan_enforce_timeouts_unlocked(data, lan_state)
         data["blackjack_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return deepcopy(lan_state.get("tables", []))
 
 
 def get_blackjack_lan_settings():
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_blackjack_lan_state(data.get("blackjack_lan", {}))
         _blackjack_lan_enforce_timeouts_unlocked(data, lan_state)
         data["blackjack_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return deepcopy(lan_state.get("settings", _default_blackjack_lan_settings()))
 
 
@@ -1824,11 +1831,12 @@ def get_blackjack_lan_table(table_id):
         return None
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_blackjack_lan_state(data.get("blackjack_lan", {}))
         _blackjack_lan_enforce_timeouts_unlocked(data, lan_state)
         table = _blackjack_lan_table_by_id(lan_state, normalized_id)
         data["blackjack_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         if table is None:
             return None
         return deepcopy(table)
@@ -1843,6 +1851,7 @@ def can_spectate_blackjack_lan_table(table_id, password=""):
         provided_password = str(password)
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_blackjack_lan_state(data.get("blackjack_lan", {}))
         _blackjack_lan_enforce_timeouts_unlocked(data, lan_state)
         table = _blackjack_lan_table_by_id(lan_state, normalized_id)
@@ -1863,7 +1872,7 @@ def can_spectate_blackjack_lan_table(table_id, password=""):
             if expected_password and provided_password != expected_password:
                 return False, "Incorrect table password."
         data["blackjack_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return True, "Spectating allowed."
 
 
@@ -1875,6 +1884,7 @@ def find_blackjack_lan_table_for_player(player_name):
         return None
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_blackjack_lan_state(data.get("blackjack_lan", {}))
         _blackjack_lan_enforce_timeouts_unlocked(data, lan_state)
         found = None
@@ -1885,7 +1895,7 @@ def find_blackjack_lan_table_for_player(player_name):
                 found["membership"] = membership
                 break
         data["blackjack_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return found
 
 
