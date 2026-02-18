@@ -5,6 +5,7 @@ import uuid
 import time
 import math
 import re
+import json
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -1246,6 +1247,72 @@ def _sign_out_current_account(session_notice=None):
         st.session_state["account_session_notice"] = session_notice
 
 
+def _remove_active_multiplayer_presence():
+    current_account = st.session_state.get("current_account")
+    guest_multiplayer_account = st.session_state.get("blackjack_multiplayer_guest_account")
+    for player_name in (current_account, guest_multiplayer_account):
+        if not player_name:
+            continue
+        try:
+            auto_remove_blackjack_lan_player(player_name)
+        except Exception:
+            pass
+
+
+def _render_unload_cleanup_script():
+    current_account = st.session_state.get("current_account")
+    guest_multiplayer_account = st.session_state.get("blackjack_multiplayer_guest_account")
+    session_id = _current_session_id()
+
+    tracked_accounts = []
+    tracked_players = []
+    for name in (current_account, guest_multiplayer_account):
+        if not name:
+            continue
+        if name not in tracked_players:
+            tracked_players.append(name)
+        tracked_accounts.append({"account": name, "session_id": session_id})
+    if not tracked_accounts and not tracked_players:
+        return
+
+    payload_json = json.dumps(
+        {
+            "accounts": tracked_accounts,
+            "lan_players": tracked_players,
+        }
+    )
+    payload_json = payload_json.replace("</", "<\\/")
+    components.html(
+        f"""
+        <script>
+        (function() {{
+          if (window.__gamblyUnloadCleanupInstalled) return;
+          window.__gamblyUnloadCleanupInstalled = true;
+          const payload = {payload_json};
+          const sendCleanup = function() {{
+            const data = JSON.stringify(payload);
+            try {{
+              const blob = new Blob([data], {{ type: "application/json" }});
+              navigator.sendBeacon("http://localhost:8502/logout", blob);
+            }} catch (e) {{
+              fetch("http://localhost:8502/logout", {{
+                method: "POST",
+                headers: {{ "Content-Type": "application/json" }},
+                body: data,
+                keepalive: true
+              }}).catch(function(){{}});
+            }}
+          }};
+          window.addEventListener("pagehide", sendCleanup, {{ capture: true }});
+          window.addEventListener("beforeunload", sendCleanup, {{ capture: true }});
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def _enforce_account_session_ownership():
     account = st.session_state.get("current_account")
     if account is None:
@@ -1685,9 +1752,7 @@ def render_back_button():
         return
 
     if st.button("Back", key="global_back_home", use_container_width=False):
-        account = st.session_state.get("current_account")
-        if account:
-            auto_remove_blackjack_lan_player(account)
+        _remove_active_multiplayer_presence()
         st.session_state["show_auth_flow"] = False
         st.session_state["auth_flow_mode"] = None
         st.session_state["pending_new_account"] = None
@@ -4928,6 +4993,7 @@ def main():
     sync_ui_settings_for_active_account()
     autosave_ui_settings_for_current_account()
     apply_theme()
+    _render_unload_cleanup_script()
     _render_account_session_notice()
     _render_storage_unavailable_notice()
     if st.session_state.get("storage_unavailable", False) and st.session_state.get("current_account"):

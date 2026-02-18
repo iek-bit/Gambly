@@ -3,7 +3,7 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import threading
-from storage import release_account_session
+from storage import auto_remove_blackjack_lan_player, release_account_session
 
 
 class LogoutHandler(BaseHTTPRequestHandler):
@@ -16,9 +16,26 @@ class LogoutHandler(BaseHTTPRequestHandler):
                 
                 account = data.get("account")
                 session_id = data.get("session_id")
+                accounts = data.get("accounts")
+                lan_players = data.get("lan_players")
                 
                 if account and session_id:
                     release_account_session(account, session_id)
+                    auto_remove_blackjack_lan_player(account)
+                if isinstance(accounts, list):
+                    for entry in accounts:
+                        if not isinstance(entry, dict):
+                            continue
+                        entry_account = entry.get("account")
+                        entry_session_id = entry.get("session_id")
+                        if entry_account and entry_session_id:
+                            release_account_session(entry_account, entry_session_id)
+                            auto_remove_blackjack_lan_player(entry_account)
+                if isinstance(lan_players, list):
+                    for player_name in lan_players:
+                        if not player_name:
+                            continue
+                        auto_remove_blackjack_lan_player(player_name)
                 
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
