@@ -18,7 +18,8 @@ DEFAULT_ODDS = 1.5
 ACCOUNTS_FILE = "accounts.json"
 ODDS_ACCOUNT_KEY = "__house_odds__"
 GAME_STAT_KEYS = {"player_guess", "computer_guess", "blackjack"}
-DEFAULT_ACCOUNT_SESSION_TTL_SECONDS = 30
+DEFAULT_ACCOUNT_SESSION_TTL_SECONDS = 6 * 60 * 60
+BLACKJACK_LAN_ACTIVITY_TTL_SECONDS = 30
 BLACKJACK_LAN_DEFAULT_TABLE_COUNT = 5
 BLACKJACK_LAN_MIN_TABLE_PLAYERS = 1
 BLACKJACK_LAN_MAX_TABLE_PLAYERS = 8
@@ -833,7 +834,7 @@ def _blackjack_lan_remove_player_after_disconnect_unlocked(table, player_name, s
 
 def _blackjack_lan_handle_unexpected_disconnects_unlocked(data, lan_state, settings):
     now_epoch = time.time()
-    ttl_seconds = _coerce_session_ttl_seconds(DEFAULT_ACCOUNT_SESSION_TTL_SECONDS)
+    ttl_seconds = _coerce_session_ttl_seconds(BLACKJACK_LAN_ACTIVITY_TTL_SECONDS)
     _prune_expired_sessions_unlocked(data, now_epoch, ttl_seconds)
 
     for table in lan_state.get("tables", []):
