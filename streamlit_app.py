@@ -4019,8 +4019,13 @@ def blackjack_ui():
                 is_private = bool(table.get("is_private", False))
                 spectators_require_password = bool(table.get("spectators_require_password", False))
                 st.markdown(
-                    f"**{table_name}** | {len(players)}/{max_players} players | {phase_label}"
+                    (
+                        f"<div style='font-size:1.22rem; font-weight:800; letter-spacing:0.01em; "
+                        f"margin:0.2rem 0 0.1rem 0;'>{table_name}</div>"
+                    ),
+                    unsafe_allow_html=True,
                 )
+                st.caption(f"{len(players)}/{max_players} players | {phase_label}")
                 if max_bet is None:
                     st.caption(f"Bet limits: min ${format_money(min_bet)} | max none")
                 else:
