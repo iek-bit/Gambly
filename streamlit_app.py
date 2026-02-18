@@ -4021,7 +4021,7 @@ def blackjack_ui():
                 st.markdown(
                     (
                         f"<div style='font-size:1.22rem; font-weight:800; letter-spacing:0.01em; "
-                        f"margin:0.2rem 0 0.1rem 0;'>{table_name}</div>"
+                        f"margin:0.2rem 0 0.1rem 0; color:rgba(247, 252, 255, 0.98);'>{table_name}</div>"
                     ),
                     unsafe_allow_html=True,
                 )
