@@ -1190,6 +1190,8 @@ def init_state():
     st.session_state.setdefault("blackjack_round", None)
     st.session_state.setdefault("blackjack_lan_spectate_table_id", None)
     st.session_state.setdefault("blackjack_lan_spectate_password", "")
+    st.session_state.setdefault("blackjack_lan_create_menu_open", False)
+    st.session_state.setdefault("blackjack_lan_create_notice", None)
     st.session_state.setdefault("blackjack_multiplayer_guest_account", None)
     st.session_state.setdefault("blackjack_multiplayer_guest_setup", False)
     st.session_state.setdefault("blackjack_pending_bet", None)
@@ -3686,6 +3688,8 @@ def blackjack_ui():
     if mode != "Multiplayer" and guest_multiplayer_account:
         _clear_blackjack_multiplayer_guest_account(delete_record=True)
         guest_multiplayer_account = None
+    if mode != "Multiplayer":
+        st.session_state["blackjack_lan_create_menu_open"] = False
     joined_lan_table = None
     multiplayer_player = account or guest_multiplayer_account
     if mode == "Multiplayer" and multiplayer_player is not None:
@@ -3854,6 +3858,7 @@ def blackjack_ui():
         if joined_table is not None:
             st.session_state["blackjack_lan_spectate_table_id"] = None
             st.session_state["blackjack_lan_spectate_password"] = ""
+            st.session_state["blackjack_lan_create_menu_open"] = False
         elif spectate_table_id is not None:
             for table in tables:
                 if int(table.get("id", -1)) == int(spectate_table_id):
@@ -3869,14 +3874,22 @@ def blackjack_ui():
                     st.session_state["blackjack_lan_spectate_table_id"] = None
                     st.session_state["blackjack_lan_spectate_password"] = ""
                     spectate_table = None
+                else:
+                    st.session_state["blackjack_lan_create_menu_open"] = False
 
         if joined_table is None and spectate_table is None:
-            refresh_col, _spacer, create_col = st.columns([1.4, 3.4, 1.8])
-            with refresh_col:
-                if st.button("Refresh tables", key="blackjack_lan_refresh_tables", use_container_width=True):
-                    _fast_rerun()
-            with create_col:
-                with st.expander("Create table", expanded=False):
+            if joined_table is None and spectate_table is None:
+                create_menu_open = bool(st.session_state.get("blackjack_lan_create_menu_open", False))
+                create_notice = st.session_state.get("blackjack_lan_create_notice")
+                if create_notice:
+                    st.success(str(create_notice))
+                    st.session_state["blackjack_lan_create_notice"] = None
+
+                if create_menu_open:
+                    st.markdown("### Create Multiplayer Table")
+                    if st.button("Back to multiplayer tables", key="blackjack_lan_create_back", use_container_width=True):
+                        st.session_state["blackjack_lan_create_menu_open"] = False
+                        _fast_rerun()
                     create_table_name = st.text_input(
                         "Table name",
                         max_chars=60,
@@ -3982,9 +3995,20 @@ def blackjack_ui():
                             disable_turn_timeout=bool(create_no_timer),
                         )
                         if ok:
-                            st.success(message)
+                            st.session_state["blackjack_lan_create_menu_open"] = False
+                            st.session_state["blackjack_lan_create_notice"] = message
+                            _fast_rerun()
                         else:
                             st.error(message)
+                    return
+
+                refresh_col, _spacer, create_col = st.columns([1.4, 3.4, 1.8])
+                with refresh_col:
+                    if st.button("Refresh tables", key="blackjack_lan_refresh_tables", use_container_width=True):
+                        _fast_rerun()
+                with create_col:
+                    if st.button("Create table", key="blackjack_lan_open_create_menu", use_container_width=True):
+                        st.session_state["blackjack_lan_create_menu_open"] = True
                         _fast_rerun()
             table_search = st.text_input(
                 "Search table names",
