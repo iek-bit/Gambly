@@ -1457,7 +1457,9 @@ def _normalize_loaded_data(loaded):
 def _load_data_unlocked(use_cache=True):
     backend = _get_storage_backend()
     if use_cache and _is_cached_state_valid_unlocked(backend):
-        return deepcopy(_state_read_cache.get("data"))
+        # Return the cached normalized state directly to avoid repeatedly
+        # deep-copying the full app state on every read helper call.
+        return _state_read_cache.get("data")
     try:
         if backend.get("type") == "supabase":
             loaded = _read_supabase_state_unlocked()
@@ -1466,12 +1468,12 @@ def _load_data_unlocked(use_cache=True):
                 return None
             normalized = _normalize_loaded_data(loaded)
             _set_state_read_cache_unlocked(backend, normalized)
-            return deepcopy(normalized)
+            return normalized
         else:
             loaded = _read_local_data_unlocked()
         normalized = _normalize_loaded_data(loaded)
         _set_state_read_cache_unlocked(backend, normalized)
-        return deepcopy(normalized)
+        return normalized
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         _set_state_read_cache_unlocked(backend, None)
         return None

@@ -437,7 +437,9 @@ def _fragment_or_passthrough(func):
     return func
 
 
-def _fast_rerun():
+def _fast_rerun(force=False):
+    if not force:
+        return
     rerun_func = getattr(st, "rerun", None)
     if not callable(rerun_func):
         return
@@ -4613,7 +4615,7 @@ def main():
         _sign_out_current_account(
             session_notice="Account storage is temporarily unavailable. You were signed out. Guest mode is still available."
         )
-        _fast_rerun()
+        _fast_rerun(force=True)
         return
     if (
         st.session_state.get("guest_mode_active", False)
