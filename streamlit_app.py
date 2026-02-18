@@ -4617,6 +4617,7 @@ def admin_account_tools_ui():
 
 def home_ui():
     st.subheader("Home")
+    storage_unavailable = bool(st.session_state.get("storage_unavailable", False))
     completion_message = st.session_state.get("guest_completion_message")
     if completion_message:
         st.success(completion_message)
