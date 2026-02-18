@@ -30,6 +30,7 @@ from storage import (
     get_account_stats,
     get_account_settings,
     get_account_password,
+    get_accounts_snapshot,
     get_account_value,
     get_blackjack_lan_settings,
     get_blackjack_lan_tables,
@@ -1851,17 +1852,13 @@ def lookup_account_ui():
     if not submitted:
         return
     account = account.strip()
-    value = get_account_value(account)
-    if value is None:
+    accounts_snapshot = get_accounts_snapshot()
+    account_entry = accounts_snapshot.get(account)
+    if account_entry is None:
         st.error("Account not found.")
     else:
-        account_names = list_account_names()
-        rankings = []
-        for name in account_names:
-            stored_value = get_account_value(name)
-            if stored_value is None:
-                continue
-            rankings.append((name, float(stored_value)))
+        value = float(account_entry.get("balance", 0.0))
+        rankings = [(name, float(entry.get("balance", 0.0))) for name, entry in accounts_snapshot.items()]
         rankings.sort(key=lambda item: (-item[1], item[0].lower()))
 
         place = None
@@ -2035,34 +2032,30 @@ def odds_calculator_ui():
 
 def leaderboards_ui():
     st.subheader("Leaderboards")
-    account_names = list_account_names()
-    if not account_names:
-        st.info("No accounts found.")
-        return
-
     selected_scope_label = st.selectbox(
         "Game scope",
         list(STAT_SCOPE_OPTIONS.keys()),
         key="leaderboard_game_scope_filter",
     )
     selected_scope = STAT_SCOPE_OPTIONS[selected_scope_label]
-
-    def _scope_stats(account_name):
-        return get_account_stats(account_name, selected_scope) or {}
+    accounts_snapshot = get_accounts_snapshot(selected_scope)
+    if not accounts_snapshot:
+        st.info("No accounts found.")
+        return
 
     metric_options = {
         "Current amount": {
-            "value_getter": lambda account_name: float(get_account_value(account_name) or 0.0),
+            "value_getter": lambda account_data: float(account_data.get("balance", 0.0)),
             "formatter": lambda value: f"${format_money(value)}",
             "you_ranked_label": "You are ranked",
         },
         "Win percentage": {
-            "value_getter": lambda account_name: float(_scope_stats(account_name).get("current_win_percentage", 0.0)),
+            "value_getter": lambda account_data: float(account_data.get("stats", {}).get("current_win_percentage", 0.0)),
             "formatter": lambda value: f"{value:.1f}%",
             "you_ranked_label": "You are ranked",
         },
         "Amount gained": {
-            "value_getter": lambda account_name: float(_scope_stats(account_name).get("total_game_net", 0.0)),
+            "value_getter": lambda account_data: float(account_data.get("stats", {}).get("total_game_net", 0.0)),
             "formatter": lambda value: f"${format_money(value)}",
             "you_ranked_label": "Your position",
         },
@@ -2075,8 +2068,8 @@ def leaderboards_ui():
     selected_config = metric_options[selected_metric]
 
     rankings = []
-    for name in account_names:
-        metric_value = selected_config["value_getter"](name)
+    for name, account_data in accounts_snapshot.items():
+        metric_value = selected_config["value_getter"](account_data)
         rankings.append((name, float(metric_value)))
 
     rankings.sort(key=lambda item: (-item[1], item[0].lower()))
@@ -2136,12 +2129,13 @@ def leaderboards_ui():
         st.write("No player below you.")
 
 
-def _check_game_limits(num_range, buy_in, guesses):
+def _check_game_limits(num_range, buy_in, guesses, limits=None):
     """
     Check if game parameters exceed configured limits.
     Returns (is_valid, error_messages) where is_valid is bool and error_messages is list of strings.
     """
-    limits = load_game_limits()
+    if limits is None:
+        limits = load_game_limits()
     messages = []
     
     if limits["max_range"] is not None and num_range > limits["max_range"]:
@@ -2161,6 +2155,7 @@ def player_guesses_game_ui(account, is_guest_mode):
     round_state = st.session_state.get("player_guess_round")
 
     if not round_state:
+        current_limits = load_game_limits()
         num_range = st.number_input("Range max", min_value=1, step=1, key="player_setup_num_range")
         buy_in = st.number_input(
             "Buy-in per round ($)",
@@ -2172,7 +2167,7 @@ def player_guesses_game_ui(account, is_guest_mode):
         guesses = st.number_input("Guesses per round", min_value=1, step=1, key="player_setup_guesses")
         
         # Check game limits
-        is_valid, limit_errors = _check_game_limits(int(num_range), float(buy_in), int(guesses))
+        is_valid, limit_errors = _check_game_limits(int(num_range), float(buy_in), int(guesses), limits=current_limits)
         if not is_valid:
             st.error("Game parameters exceed limits:")
             for error in limit_errors:
@@ -2543,6 +2538,7 @@ def computer_guesses_game_ui(account, is_guest_mode):
     round_state = st.session_state.get("computer_guess_round")
 
     if not round_state:
+        current_limits = load_game_limits()
         num_range = st.number_input("Range max", min_value=1, step=1, key="computer_setup_num_range")
         secret_number = st.number_input(
             "Your secret number",
@@ -2561,7 +2557,12 @@ def computer_guesses_game_ui(account, is_guest_mode):
         )
 
         # Check game limits
-        is_valid, limit_errors = _check_game_limits(int(num_range), float(price_per_round), int(guesses))
+        is_valid, limit_errors = _check_game_limits(
+            int(num_range),
+            float(price_per_round),
+            int(guesses),
+            limits=current_limits,
+        )
         if not is_valid:
             st.error("Game parameters exceed limits:")
             for error in limit_errors:
@@ -3931,6 +3932,7 @@ def blackjack_ui():
         return
 
     if round_state is None:
+        current_limits = load_game_limits()
         bet_input = st.number_input(
             "Bet amount ($)",
             min_value=0.01,
@@ -3941,7 +3943,7 @@ def blackjack_ui():
         bet = house_round_charge(float(bet_input))
         
         # Check game limits (for blackjack, only buy_in limit applies)
-        is_valid, limit_errors = _check_game_limits(1, bet, 1)  # range=1, guesses=1 (not used for blackjack)
+        is_valid, limit_errors = _check_game_limits(1, bet, 1, limits=current_limits)  # range=1, guesses=1
         if not is_valid:
             # Only show buy_in limit error for blackjack
             for error in limit_errors:
@@ -3959,7 +3961,7 @@ def blackjack_ui():
                 return
             
             # Final validation check before dealing
-            is_valid, limit_errors = _check_game_limits(1, bet, 1)
+            is_valid, limit_errors = _check_game_limits(1, bet, 1, limits=current_limits)
             if not is_valid:
                 for error in limit_errors:
                     if "Buy-in" in error or "buy-in" in error:

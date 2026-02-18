@@ -1813,6 +1813,33 @@ def get_account_stats(name, game_type=None):
     return _normalize_stats_bucket(stats.get("game_breakdown", {}).get(selected_game_type, {}))
 
 
+def get_accounts_snapshot(game_type=None):
+    data = _load_data()
+    selected_game_type = _normalize_game_type(game_type)
+    snapshot = {}
+    for name, account in data["accounts"].items():
+        if is_reserved_account_name(name):
+            continue
+        if not isinstance(account, dict):
+            continue
+        try:
+            balance = house_round_balance(float(account.get("balance", 0.0)))
+        except (TypeError, ValueError):
+            balance = 0.0
+        account_stats = _normalize_account_stats(account.get("stats", {}))
+        if selected_game_type is None:
+            scoped_stats = _normalize_stats_bucket(account_stats)
+        else:
+            scoped_stats = _normalize_stats_bucket(
+                account_stats.get("game_breakdown", {}).get(selected_game_type, {})
+            )
+        snapshot[name] = {
+            "balance": float(balance),
+            "stats": scoped_stats,
+        }
+    return snapshot
+
+
 def get_account_settings(name):
     data = _load_data()
     account = data["accounts"].get(name)
