@@ -430,6 +430,23 @@ def compute_win_probability(remaining_numbers, guesses_left):
     return min(1.0, guesses_left / remaining_numbers)
 
 
+def _fragment_or_passthrough(func):
+    fragment_decorator = getattr(st, "fragment", None)
+    if callable(fragment_decorator):
+        return fragment_decorator(func)
+    return func
+
+
+def _fast_rerun():
+    rerun_func = getattr(st, "rerun", None)
+    if not callable(rerun_func):
+        return
+    try:
+        rerun_func(scope="fragment")
+    except Exception:
+        rerun_func()
+
+
 def _svg_background_uri(svg: str) -> str:
     """Return a data URI for an SVG string (base64-encoded).
 
@@ -1468,17 +1485,17 @@ def render_top_controls():
                     st.session_state["auth_flow_mode"] = None
                     st.session_state["pending_new_account"] = None
                     st.session_state["active_action"] = "Change profile picture"
-                    st.rerun()
+                    _fast_rerun()
                 if st.button("Change password", key="profile_change_password", use_container_width=True):
                     st.session_state["show_auth_flow"] = False
                     st.session_state["auth_flow_mode"] = None
                     st.session_state["pending_new_account"] = None
                     st.session_state["active_action"] = "Change password"
-                    st.rerun()
+                    _fast_rerun()
                 if st.button("Sign out", key="profile_sign_out", use_container_width=True):
                     _sign_out_current_account()
                     st.success("Signed out.")
-                    st.rerun()
+                    _fast_rerun()
     elif not current_account:
         if active_action == "Home" and not show_auth_flow:
             sign_in_col, _spacer = st.columns([1.22, 4.97])
@@ -1493,7 +1510,7 @@ def render_top_controls():
                     st.session_state["show_auth_flow"] = True
                     st.session_state["auth_flow_mode"] = None
                     st.session_state["pending_new_account"] = None
-                    st.rerun()
+                    _fast_rerun()
 
 
 def is_guessing_in_progress():
@@ -1670,7 +1687,7 @@ def render_back_button():
         st.session_state["pending_new_account"] = None
         st.session_state["active_action"] = "Home"
         end_guest_session(set_completion_message=True)
-        st.rerun()
+        _fast_rerun()
 
 
 def auth_ui():
@@ -1685,10 +1702,10 @@ def auth_ui():
         yes_col, no_col = st.columns(2)
         if yes_col.button("Yes, sign in", key="auth_choose_sign_in", use_container_width=True):
             st.session_state["auth_flow_mode"] = "sign_in"
-            st.rerun()
+            _fast_rerun()
         if no_col.button("No, create account", key="auth_choose_create", use_container_width=True):
             st.session_state["auth_flow_mode"] = "create_account"
-            st.rerun()
+            _fast_rerun()
         return
 
     if flow_mode == "sign_in":
@@ -1722,7 +1739,7 @@ def auth_ui():
                     if reason == "in_use":
                         st.error("That account is already signed in from another session.")
                         st.session_state["pending_force_sign_in_account"] = account
-                        st.rerun()
+                        _fast_rerun()
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
@@ -1732,7 +1749,7 @@ def auth_ui():
                 st.session_state["show_auth_flow"] = False
                 st.session_state["auth_flow_mode"] = None
                 st.success(f"Signed in as {account}.")
-                st.rerun()
+                _fast_rerun()
                 return
             if password == stored_password:
                 acquired, reason = acquire_account_session(account, _current_session_id())
@@ -1740,7 +1757,7 @@ def auth_ui():
                     if reason == "in_use":
                         st.error("That account is already signed in from another session.")
                         st.session_state["pending_force_sign_in_account"] = account
-                        st.rerun()
+                        _fast_rerun()
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
@@ -1750,7 +1767,7 @@ def auth_ui():
                 st.session_state["show_auth_flow"] = False
                 st.session_state["auth_flow_mode"] = None
                 st.success(f"Signed in as {account}.")
-                st.rerun()
+                _fast_rerun()
                 return
             st.error("Incorrect password.")
 
@@ -1776,7 +1793,7 @@ def auth_ui():
                 st.session_state["auth_flow_mode"] = None
                 st.session_state["pending_force_sign_in_account"] = None
                 st.success(f"Signed in as {pending_force_account}.")
-                st.rerun()
+                _fast_rerun()
                 return
 
     if flow_mode == "create_account":
@@ -1820,7 +1837,7 @@ def auth_ui():
             st.session_state["show_auth_flow"] = False
             st.session_state["auth_flow_mode"] = None
             st.success(f"Account created and signed in as {account}.")
-            st.rerun()
+            _fast_rerun()
             return
 
 
@@ -1958,7 +1975,7 @@ def change_profile_picture_ui():
             st.session_state["setting_profile_avatar"] = ""
             _persist_ui_settings_for_current_account()
             st.success("Profile picture cleared. Using your initial.")
-            st.rerun()
+            _fast_rerun()
 
     search_text = st.text_input(
         "Search avatars (name, tag, emoji)",
@@ -1994,7 +2011,7 @@ def change_profile_picture_ui():
                         st.session_state["setting_profile_avatar"] = avatar_id
                         _persist_ui_settings_for_current_account()
                         st.success(f"Updated profile picture to {emoji} {name}.")
-                        st.rerun()
+                        _fast_rerun()
         st.markdown("---")
 
 
@@ -2197,7 +2214,7 @@ def player_guesses_game_ui(account, is_guest_mode):
                 ],
             }
             st.session_state["player_guess_input_text"] = ""
-            st.rerun()
+            _fast_rerun()
 
         if st.button("Start round", key="player_setup_start_round", use_container_width=True):
             if is_bet_confirmation_enabled() and not setup_confirmed:
@@ -2276,7 +2293,7 @@ def player_guesses_game_ui(account, is_guest_mode):
                         ],
                     }
                     st.session_state["player_guess_input_text"] = ""
-                    st.rerun()
+                    _fast_rerun()
                 else:
                     if is_guest_mode:
                         st.error("Not enough guest funds to play another round.")
@@ -2317,11 +2334,11 @@ def player_guesses_game_ui(account, is_guest_mode):
                                         ],
                                     }
                                     st.session_state["player_guess_input_text"] = ""
-                                    st.rerun()
+                                    _fast_rerun()
         with col2:
             if st.button("End round"):
                 st.session_state["player_guess_round"] = None
-                st.rerun()
+                _fast_rerun()
         return
 
     render_player_analytics_sidebar(round_state)
@@ -2585,13 +2602,13 @@ def computer_guesses_game_ui(account, is_guest_mode):
                         **settings,
                         **round_result,
                     }
-                    st.rerun()
+                    _fast_rerun()
                 return
             st.session_state["computer_guess_round"] = {
                 **settings,
                 **round_result,
             }
-            st.rerun()
+            _fast_rerun()
         return
 
     render_computer_analytics_sidebar(round_state)
@@ -2611,7 +2628,7 @@ def computer_guesses_game_ui(account, is_guest_mode):
             st.session_state["computer_setup_guesses"] = int(round_state["guesses"])
             st.session_state["computer_setup_price"] = float(round_state["price_per_round"])
             st.session_state["computer_setup_secret_number"] = int(round_state["secret_number"])
-            st.rerun()
+            _fast_rerun()
     with col2:
         if st.button("Play another round (choose new secret)", key="computer_play_another_round"):
             st.session_state["computer_guess_round"] = None
@@ -2619,14 +2636,15 @@ def computer_guesses_game_ui(account, is_guest_mode):
             st.session_state["computer_setup_guesses"] = int(round_state["guesses"])
             st.session_state["computer_setup_price"] = float(round_state["price_per_round"])
             st.session_state["computer_setup_secret_number"] = randint(1, int(round_state["num_range"]))
-            st.rerun()
+            _fast_rerun()
     with col3:
         if st.button("Quit", key="computer_quit_rounds"):
             st.session_state["computer_guess_round"] = None
             st.session_state["selected_game_mode"] = None
-            st.rerun()
+            _fast_rerun()
 
 
+@_fragment_or_passthrough
 def play_game_ui():
     st.subheader("Play the Number Guessing Game")
     account = st.session_state["current_account"]
@@ -2638,7 +2656,7 @@ def play_game_ui():
             with col1:
                 if st.button("Yes, play as guest", key="guest_mode_yes", use_container_width=True):
                     st.session_state["guest_mode_setup"] = True
-                    st.rerun()
+                    _fast_rerun()
             
             return
 
@@ -2657,7 +2675,7 @@ def play_game_ui():
         st.session_state["guest_mode_setup"] = False
         st.session_state["selected_game_mode"] = None
         st.success(f"Guest mode started with ${format_money(guest_buy_in)}.")
-        st.rerun()
+        _fast_rerun()
 
     is_guest_mode = account is None and st.session_state.get("guest_mode_active", False)
 
@@ -2668,11 +2686,11 @@ def play_game_ui():
         with col1:
             if st.button("You guess the number", use_container_width=True):
                 st.session_state["selected_game_mode"] = "You guess the number"
-                st.rerun()
+                _fast_rerun()
         with col2:
             if st.button("Computer guesses your number", use_container_width=True):
                 st.session_state["selected_game_mode"] = "Computer guesses your number"
-                st.rerun()
+                _fast_rerun()
         return
 
     if selected_mode == "You guess the number":
@@ -3511,6 +3529,7 @@ def render_blackjack_lan_hands(table):
     )
 
 
+@_fragment_or_passthrough
 def blackjack_ui():
 
     st.subheader("Blackjack")
@@ -3550,15 +3569,15 @@ def blackjack_ui():
         with col1:
             if st.button("Single Player", key="mode_single_player", use_container_width=True):
                 st.session_state["blackjack_mode_select"] = "Single Player"
-                st.rerun()
+                _fast_rerun()
         with col2:
             if st.button("Hotseat Multiplayer", key="mode_hotseat", use_container_width=True):
                 st.session_state["blackjack_mode_select"] = "Hotseat Multiplayer"
-                st.rerun()
+                _fast_rerun()
         with col3:
             if st.button("Multiplayer", key="mode_remote", use_container_width=True):
                 st.session_state["blackjack_mode_select"] = "Multiplayer"
-                st.rerun()
+                _fast_rerun()
     mode = st.session_state.get("blackjack_mode_select", "Single Player")
     st.markdown(f"<div style='margin-top: 0.5rem; font-weight: bold; color: var(--text-color);'>Current mode: <span style='color: var(--primary-color);'>{mode}</span></div>", unsafe_allow_html=True)
 
@@ -3570,7 +3589,7 @@ def blackjack_ui():
                 with col1:
                     if st.button("Yes, play as guest", key="blackjack_guest_mode_yes", use_container_width=True):
                         st.session_state["blackjack_guest_mode_setup"] = True
-                        st.rerun()
+                        _fast_rerun()
                 return
 
             with st.form("blackjack_guest_mode_setup_form"):
@@ -3590,7 +3609,7 @@ def blackjack_ui():
             st.session_state["blackjack_guest_mode_setup"] = False
             st.session_state["blackjack_guest_total_net"] = 0.0
             st.success(f"Guest mode started with ${format_money(guest_buy_in)}.")
-            st.rerun()
+            _fast_rerun()
 
         is_guest_mode = account is None and st.session_state.get("guest_mode_active", False)
         if account is not None:
@@ -3631,7 +3650,7 @@ def blackjack_ui():
                 st.warning("You are not signed in. Start a guest multiplayer session to join tables.")
                 if st.button("Start as guest", key="blackjack_multiplayer_guest_start", use_container_width=True):
                     st.session_state["blackjack_multiplayer_guest_setup"] = True
-                    st.rerun()
+                    _fast_rerun()
                 return
 
             with st.form("blackjack_multiplayer_guest_setup_form"):
@@ -3671,7 +3690,7 @@ def blackjack_ui():
             st.session_state["blackjack_multiplayer_guest_account"] = guest_alias
             st.session_state["blackjack_multiplayer_guest_setup"] = False
             st.success(f"Guest multiplayer started with ${format_money(guest_buy_in)}.")
-            st.rerun()
+            _fast_rerun()
 
         account = multiplayer_player
         if st.session_state.get("blackjack_multiplayer_guest_account") == account:
@@ -3715,7 +3734,7 @@ def blackjack_ui():
             refresh_col, _spacer, create_col = st.columns([1.4, 3.4, 1.8])
             with refresh_col:
                 if st.button("Refresh tables", key="blackjack_lan_refresh_tables", use_container_width=True):
-                    st.rerun()
+                    _fast_rerun()
             with create_col:
                 with st.expander("Create table", expanded=False):
                     create_table_name = st.text_input(
@@ -3797,7 +3816,7 @@ def blackjack_ui():
                             st.success(message)
                         else:
                             st.error(message)
-                        st.rerun()
+                        _fast_rerun()
             table_search = st.text_input(
                 "Search table names",
                 key="blackjack_lan_table_search",
@@ -3871,7 +3890,7 @@ def blackjack_ui():
                             st.success(message)
                         else:
                             st.error(message)
-                        st.rerun()
+                        _fast_rerun()
                 with spectate_col:
                     if st.button(
                         f"Spectate {table_name}",
@@ -3886,7 +3905,7 @@ def blackjack_ui():
                             st.success("Now spectating this table.")
                         else:
                             st.error(message)
-                        st.rerun()
+                        _fast_rerun()
                 if admin_delete_col is not None:
                     with admin_delete_col:
                         if st.button(
@@ -3899,7 +3918,7 @@ def blackjack_ui():
                                 st.success(message)
                             else:
                                 st.error(message)
-                            st.rerun()
+                            _fast_rerun()
                 st.markdown("---")
             return
 
@@ -3916,7 +3935,7 @@ def blackjack_ui():
             if st.button("Stop spectating", key=f"blackjack_lan_stop_spectating_{table_id}", use_container_width=True):
                 st.session_state["blackjack_lan_spectate_table_id"] = None
                 st.session_state["blackjack_lan_spectate_password"] = ""
-                st.rerun()
+                _fast_rerun()
         else:
             if membership == "pending":
                 st.success(f"You are queued for Table {table_id}.")
@@ -3931,7 +3950,7 @@ def blackjack_ui():
                     st.error(message)
                 if st.session_state.get("blackjack_multiplayer_guest_account") == account:
                     _clear_blackjack_multiplayer_guest_account(delete_record=True)
-                st.rerun()
+                _fast_rerun()
 
         players = table_to_view.get("players", [])
         pending_players = table_to_view.get("pending_players", [])
@@ -3984,7 +4003,7 @@ def blackjack_ui():
                     st.success(message)
                 else:
                     st.error(message)
-                st.rerun()
+                _fast_rerun()
             ready_count, total_players = blackjack_lan_ready_counts(table_to_view)
             ready_btn_col, ready_count_col = st.columns([4, 1.5])
             with ready_btn_col:
@@ -4001,7 +4020,7 @@ def blackjack_ui():
                         st.success(message)
                     else:
                         st.error(message)
-                    st.rerun()
+                    _fast_rerun()
             with ready_count_col:
                 st.caption(f"{ready_count}/{total_players} ready")
 
@@ -4025,7 +4044,7 @@ def blackjack_ui():
                             st.success(message)
                         else:
                             st.error(message)
-                        st.rerun()
+                        _fast_rerun()
                 with stand_col:
                     if st.button(
                         "Stand",
@@ -4037,7 +4056,7 @@ def blackjack_ui():
                             st.success(message)
                         else:
                             st.error(message)
-                        st.rerun()
+                        _fast_rerun()
             else:
                 if current_turn_player:
                     st.caption(f"Waiting for {current_turn_player} to act.")
@@ -4117,7 +4136,7 @@ def blackjack_ui():
             st.session_state["blackjack_pending_bet"] = None
             st.session_state["blackjack_pending_replay_bet"] = None
             st.session_state["blackjack_round"] = started_round
-            st.rerun()
+            _fast_rerun()
 
         pending_bet = st.session_state.get("blackjack_pending_bet")
         if pending_bet and (not is_guest_mode) and (not is_debt_allowed()):
@@ -4131,7 +4150,7 @@ def blackjack_ui():
                 st.session_state["blackjack_pending_bet"] = None
                 st.session_state["blackjack_pending_replay_bet"] = None
                 st.session_state["blackjack_round"] = started_round
-                st.rerun()
+                _fast_rerun()
         return
 
     player_total = blackjack_hand_total(round_state["player_cards"])
@@ -4175,7 +4194,7 @@ def blackjack_ui():
                     if error:
                         st.error(error)
                         return
-                st.rerun()
+                _fast_rerun()
         with stand_col:
             if st.button("Stand", key="blackjack_stand", use_container_width=True):
                 round_state.setdefault("history", []).append("You stood.")
@@ -4183,7 +4202,7 @@ def blackjack_ui():
                 if error:
                     st.error(error)
                     return
-                st.rerun()
+                _fast_rerun()
         return
 
     st.caption(f"Dealer total: {dealer_total} | Your total: {player_total}")
@@ -4217,13 +4236,13 @@ def blackjack_ui():
             st.session_state["blackjack_pending_bet"] = None
             st.session_state["blackjack_pending_replay_bet"] = None
             st.session_state["blackjack_round"] = started_round
-            st.rerun()
+            _fast_rerun()
     with reset_col:
         if st.button("Change bet", key="blackjack_change_bet", use_container_width=True):
             st.session_state["blackjack_pending_bet"] = None
             st.session_state["blackjack_pending_replay_bet"] = None
             st.session_state["blackjack_round"] = None
-            st.rerun()
+            _fast_rerun()
 
     pending_replay_bet = st.session_state.get("blackjack_pending_replay_bet")
     if pending_replay_bet and (not is_guest_mode) and (not is_debt_allowed()):
@@ -4237,7 +4256,7 @@ def blackjack_ui():
             st.session_state["blackjack_pending_bet"] = None
             st.session_state["blackjack_pending_replay_bet"] = None
             st.session_state["blackjack_round"] = started_round
-            st.rerun()
+            _fast_rerun()
 
 
 def developer_ui():
@@ -4370,7 +4389,7 @@ def blackjack_lan_admin_ui():
             st.success(message)
         else:
             st.error(message)
-        st.rerun()
+        _fast_rerun()
 
     st.markdown("#### Existing Tables")
     if not tables:
@@ -4470,7 +4489,7 @@ def blackjack_lan_admin_ui():
                 st.success(message)
             else:
                 st.error(message)
-            st.rerun()
+            _fast_rerun()
 
         if st.button(
             f"Delete table {table_id}",
@@ -4482,7 +4501,7 @@ def blackjack_lan_admin_ui():
                 st.success(message)
             else:
                 st.error(message)
-            st.rerun()
+            _fast_rerun()
 
         st.markdown("---")
 
@@ -4552,9 +4571,9 @@ def admin_account_tools_ui():
             if st.session_state.get("current_account") == selected_account:
                 _sign_out_current_account()
                 st.success(f"Deleted account {selected_account}. You were signed out.")
-                st.rerun()
+                _fast_rerun()
             st.success(f"Deleted account {selected_account}.")
-            st.rerun()
+            _fast_rerun()
 
     st.markdown("#### 4) Change Account Password")
     with st.form("admin_change_password_form"):
@@ -4630,7 +4649,7 @@ def home_ui():
             st.session_state["blackjack_guest_mode_setup"] = False
         if reset_selected_mode:
             st.session_state["selected_game_mode"] = None
-        st.rerun()
+        _fast_rerun()
 
     def _home_action_button(
         label,
@@ -4751,7 +4770,7 @@ def main():
         _sign_out_current_account(
             session_notice="Account storage is temporarily unavailable. You were signed out. Guest mode is still available."
         )
-        st.rerun()
+        _fast_rerun()
         return
     if (
         st.session_state.get("guest_mode_active", False)
