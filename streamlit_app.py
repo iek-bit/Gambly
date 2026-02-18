@@ -6,6 +6,7 @@ import time
 import math
 import re
 import json
+import textwrap
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -3662,7 +3663,7 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
         timer_class = "bj-lan-timer bj-lan-timer-danger" if timer_value <= 10 else "bj-lan-timer"
         timer_html = f'<div class="{timer_class}">TIME: {timer_value}s</div>'
 
-    st.markdown(
+    table_html = textwrap.dedent(
         f"""
         <div class="bj-lan-wrap bj-lan-ring">
             {timer_html}
@@ -3677,9 +3678,9 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
             </div>
             <div class="bj-lan-seats">{players_html}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    ).strip()
+    st.markdown(table_html, unsafe_allow_html=True)
 
 
 def blackjack_ui():
