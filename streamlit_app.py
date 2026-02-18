@@ -3991,7 +3991,7 @@ def blackjack_ui():
                 key="blackjack_lan_table_search",
                 placeholder="Type a table name",
             ).strip().lower()
-            st.caption("Join a table to play multiplayer with other users on this app URL.")
+            #st.caption("Join a table to play multiplayer with other users on this app URL.")
             visible_tables = []
             for table in tables:
                 table_id = int(table["id"])
