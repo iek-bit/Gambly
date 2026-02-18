@@ -2789,42 +2789,27 @@ def blackjack_render_hand_html(cards, hidden_indexes, animate_indexes, target):
     return "".join(rendered_cards)
 
 
-def render_blackjack_table(round_state):
-    dealer_cards = round_state.get("dealer_cards", [])
-    player_cards = round_state.get("player_cards", [])
-    reveal_dealer_hole = round_state.get("status") != "player_turn"
-    hidden_indexes = {0} if dealer_cards and not reveal_dealer_hole else set()
-
-    dealer_visible_total = "?"
-    if reveal_dealer_hole:
-        dealer_visible_total = str(blackjack_hand_total(dealer_cards))
-    elif len(dealer_cards) > 1:
-        dealer_visible_total = f"{blackjack_hand_total(dealer_cards[1:])}+"
-
-    player_total = blackjack_hand_total(player_cards) if player_cards else 0
-    dealer_cards_html = blackjack_render_hand_html(
-        dealer_cards,
-        hidden_indexes,
-        round_state.get("animate_dealer_indexes", []),
-        "dealer",
-    )
-    player_cards_html = blackjack_render_hand_html(
-        player_cards,
-        set(),
-        round_state.get("animate_player_indexes", []),
-        "player",
+def _blackjack_style_signature():
+    return (
+        st.session_state.get("theme_bj_label_color", "#ecfff9"),
+        st.session_state.get("theme_bj_deck_color", "#d9f6ef"),
+        st.session_state.get("theme_bj_deck_count_color", "rgba(237, 252, 247, 0.92)"),
+        st.session_state.get("theme_bj_empty_slot_color", "rgba(241, 255, 250, 0.74)"),
     )
 
-    bj_label_color = st.session_state.get("theme_bj_label_color", "#ecfff9")
-    bj_deck_color = st.session_state.get("theme_bj_deck_color", "#d9f6ef")
-    bj_deck_count_color = st.session_state.get("theme_bj_deck_count_color", "rgba(237, 252, 247, 0.92)")
-    bj_empty_slot_color = st.session_state.get("theme_bj_empty_slot_color", "rgba(241, 255, 250, 0.74)")
 
+def _ensure_blackjack_shared_styles():
+    signature = _blackjack_style_signature()
+    if st.session_state.get("_blackjack_shared_style_signature") == signature:
+        return
+
+    bj_label_color, bj_deck_color, bj_deck_count_color, bj_empty_slot_color = signature
     st.markdown(
         f"""
         <style>
-        .bj-table-wrap {{
-            margin: 0.2rem 0 0.48rem 0;
+        .bj-table-wrap,
+        .bj-lan-wrap {{
+            margin: 0.2rem 0 0.5rem 0;
             border-radius: 14px;
             padding: 0.56rem 0.62rem 0.62rem 0.62rem;
             background: linear-gradient(160deg, rgba(12, 64, 54, 0.78), rgba(7, 39, 33, 0.84));
@@ -2832,12 +2817,17 @@ def render_blackjack_table(round_state):
             box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
             overflow: hidden;
         }}
+        .bj-lan-player-block {{
+            margin-top: 0.4rem;
+            padding-top: 0.38rem;
+            border-top: 1px solid rgba(188, 233, 220, 0.2);
+        }}
         .bj-row {{
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 0.4rem;
-            margin: 0.14rem 0;
+            margin: 0.12rem 0;
             text-align: center;
         }}
         .bj-label {{
@@ -2845,7 +2835,7 @@ def render_blackjack_table(round_state):
             font-weight: 700;
             letter-spacing: 0.01em;
             margin-bottom: 0.08rem;
-            font-size: 0.92rem;
+            font-size: 0.9rem;
             color: {bj_label_color};
             text-align: center;
         }}
@@ -2872,9 +2862,7 @@ def render_blackjack_table(round_state):
             border-radius: 7px;
             border: 1px solid rgba(211, 239, 228, 0.42);
             background: linear-gradient(165deg, #164e56 0%, #0e3442 100%);
-            box-shadow:
-                0 7px 12px rgba(0, 0, 0, 0.24),
-                inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+            box-shadow: 0 7px 12px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
             color: {bj_deck_color};
             display: flex;
             align-items: center;
@@ -2990,6 +2978,7 @@ def render_blackjack_table(round_state):
             font-size: 0.74rem;
             display: flex;
             align-items: center;
+            justify-content: center;
         }}
         .bj-card-deal-player {{
             animation: bjDealPlayer 460ms cubic-bezier(0.22, 0.9, 0.28, 1) both;
@@ -3018,7 +3007,8 @@ def render_blackjack_table(round_state):
             }}
         }}
         @media (max-width: 700px) {{
-            .bj-table-wrap {{
+            .bj-table-wrap,
+            .bj-lan-wrap {{
                 padding: 0.5rem;
             }}
             .bj-card,
@@ -3053,6 +3043,41 @@ def render_blackjack_table(round_state):
             }}
         }}
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.session_state["_blackjack_shared_style_signature"] = signature
+
+
+def render_blackjack_table(round_state):
+    _ensure_blackjack_shared_styles()
+    dealer_cards = round_state.get("dealer_cards", [])
+    player_cards = round_state.get("player_cards", [])
+    reveal_dealer_hole = round_state.get("status") != "player_turn"
+    hidden_indexes = {0} if dealer_cards and not reveal_dealer_hole else set()
+
+    dealer_visible_total = "?"
+    if reveal_dealer_hole:
+        dealer_visible_total = str(blackjack_hand_total(dealer_cards))
+    elif len(dealer_cards) > 1:
+        dealer_visible_total = f"{blackjack_hand_total(dealer_cards[1:])}+"
+
+    player_total = blackjack_hand_total(player_cards) if player_cards else 0
+    dealer_cards_html = blackjack_render_hand_html(
+        dealer_cards,
+        hidden_indexes,
+        round_state.get("animate_dealer_indexes", []),
+        "dealer",
+    )
+    player_cards_html = blackjack_render_hand_html(
+        player_cards,
+        set(),
+        round_state.get("animate_player_indexes", []),
+        "player",
+    )
+
+    st.markdown(
+        f"""
         <div class="bj-table-wrap">
             <div class="bj-row">
                 <div class="bj-label">Dealer ({dealer_visible_total})</div>
@@ -3293,6 +3318,7 @@ def blackjack_lan_ready_counts(table):
 
 
 def render_blackjack_lan_hands(table):
+    _ensure_blackjack_shared_styles()
     dealer_cards = table.get("dealer_cards", [])
     reveal_dealer = table.get("phase") != "player_turns"
     dealer_hidden_indexes = set() if reveal_dealer else ({0} if dealer_cards else set())
@@ -3331,189 +3357,8 @@ def render_blackjack_lan_hands(table):
         )
     players_html = "".join(player_blocks) if player_blocks else "<div class='bj-empty-slot'>No players at this table.</div>"
 
-    bj_label_color = st.session_state.get("theme_bj_label_color", "#ecfff9")
-    bj_deck_color = st.session_state.get("theme_bj_deck_color", "#d9f6ef")
-    bj_deck_count_color = st.session_state.get("theme_bj_deck_count_color", "rgba(237, 252, 247, 0.92)")
-    bj_empty_slot_color = st.session_state.get("theme_bj_empty_slot_color", "rgba(241, 255, 250, 0.74)")
-
     st.markdown(
         f"""
-        <style>
-        .bj-lan-wrap {{
-            margin: 0.2rem 0 0.5rem 0;
-            border-radius: 14px;
-            padding: 0.56rem 0.62rem 0.62rem 0.62rem;
-            background: linear-gradient(160deg, rgba(12, 64, 54, 0.78), rgba(7, 39, 33, 0.84));
-            border: 1px solid rgba(136, 216, 188, 0.34);
-            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
-            overflow: hidden;
-        }}
-        .bj-lan-player-block {{
-            margin-top: 0.4rem;
-            padding-top: 0.38rem;
-            border-top: 1px solid rgba(188, 233, 220, 0.2);
-        }}
-        .bj-row {{
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.4rem;
-            margin: 0.12rem 0;
-            text-align: center;
-        }}
-        .bj-label {{
-            width: 100%;
-            font-weight: 700;
-            letter-spacing: 0.01em;
-            margin-bottom: 0.08rem;
-            font-size: 0.9rem;
-            color: {bj_label_color};
-            text-align: center;
-        }}
-        .bj-hand {{
-            min-height: 74px;
-            width: 100%;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.32rem;
-            align-items: center;
-            justify-content: center;
-        }}
-        .bj-center {{
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            margin: 0.14rem 0 0.2rem 0;
-        }}
-        .bj-deck {{
-            position: relative;
-            width: 46px;
-            height: 66px;
-            border-radius: 7px;
-            border: 1px solid rgba(211, 239, 228, 0.42);
-            background: linear-gradient(165deg, #164e56 0%, #0e3442 100%);
-            box-shadow:
-                0 7px 12px rgba(0, 0, 0, 0.24),
-                inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-            color: {bj_deck_color};
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 0.68rem;
-            letter-spacing: 0.03em;
-        }}
-        .bj-deck::before,
-        .bj-deck::after {{
-            content: "";
-            position: absolute;
-            border-radius: 7px;
-            border: 1px solid rgba(211, 239, 228, 0.24);
-            background: linear-gradient(165deg, #143d44 0%, #0c2b37 100%);
-            width: 46px;
-            height: 66px;
-            left: -3px;
-            top: -3px;
-            z-index: -1;
-        }}
-        .bj-deck::after {{
-            left: -6px;
-            top: -6px;
-            opacity: 0.75;
-        }}
-        .bj-deck-count {{
-            margin-top: 0.16rem;
-            font-size: 0.72rem;
-            color: {bj_deck_count_color};
-        }}
-        .bj-card {{
-            width: 46px;
-            height: 66px;
-            border-radius: 7px;
-            border: 1px solid rgba(191, 210, 205, 0.85);
-            background: linear-gradient(178deg, #fff 0%, #f2f8f4 100%);
-            box-shadow: 0 5px 10px rgba(0, 0, 0, 0.2);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-            font-size: 0.86rem;
-            letter-spacing: 0.01em;
-        }}
-        .bj-card-face {{
-            width: 100%;
-            height: 100%;
-            position: relative;
-            display: block;
-        }}
-        .bj-card-corner {{
-            position: absolute;
-            display: flex;
-            flex-direction: column;
-            line-height: 0.85;
-            font-weight: 800;
-            font-size: 0.65rem;
-        }}
-        .bj-card-corner small {{
-            font-size: 0.56rem;
-            font-weight: 700;
-        }}
-        .bj-card-corner-tl {{
-            top: 3px;
-            left: 4px;
-            align-items: flex-start;
-        }}
-        .bj-card-corner-br {{
-            right: 4px;
-            bottom: 3px;
-            transform: rotate(180deg);
-            align-items: flex-start;
-        }}
-        .bj-card-center {{
-            position: absolute;
-            inset: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.08rem;
-            opacity: 0.9;
-        }}
-        .bj-card-black {{
-            color: #102b24;
-        }}
-        .bj-card-red {{
-            color: #a11f33;
-        }}
-        .bj-card-back {{
-            border-color: rgba(166, 222, 208, 0.56);
-            background: repeating-linear-gradient(
-                45deg,
-                #0f3f50,
-                #0f3f50 6px,
-                #1d5f6d 6px,
-                #1d5f6d 12px
-            );
-        }}
-        .bj-back-pattern {{
-            width: 84%;
-            height: 84%;
-            border-radius: 6px;
-            border: 1px solid rgba(207, 241, 231, 0.62);
-            background: rgba(255, 255, 255, 0.08);
-        }}
-        .bj-empty-slot {{
-            min-height: 66px;
-            padding: 0.35rem 0.52rem;
-            border-radius: 10px;
-            border: 1px dashed rgba(199, 241, 229, 0.38);
-            color: {bj_empty_slot_color};
-            font-size: 0.74rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }}
-        </style>
         <div class="bj-lan-wrap">
             <div class="bj-row"><div class="bj-label">Dealer ({dealer_total_text})</div></div>
             <div class="bj-row"><div class="bj-hand">{dealer_cards_html}</div></div>
