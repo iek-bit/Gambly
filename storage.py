@@ -19,7 +19,9 @@ ACCOUNTS_FILE = "accounts.json"
 ODDS_ACCOUNT_KEY = "__house_odds__"
 GAME_STAT_KEYS = {"player_guess", "computer_guess", "blackjack"}
 DEFAULT_ACCOUNT_SESSION_TTL_SECONDS = 6 * 60 * 60
-BLACKJACK_LAN_ACTIVITY_TTL_SECONDS = 30
+# Keep LAN players active longer between UI interactions so seated players do
+# not get dropped while coordinating bets/ready states.
+BLACKJACK_LAN_ACTIVITY_TTL_SECONDS = 5 * 60
 BLACKJACK_LAN_DEFAULT_TABLE_COUNT = 5
 BLACKJACK_LAN_MIN_TABLE_PLAYERS = 1
 BLACKJACK_LAN_MAX_TABLE_PLAYERS = 8
@@ -116,6 +118,30 @@ def _coerce_blackjack_lan_bet_amount(raw_value, fallback, *, allow_none=False):
     return max(0.0, float(normalized_value))
 
 
+def _coerce_blackjack_lan_turn_timeout(raw_value, fallback, *, allow_none=False):
+    if allow_none and raw_value is None:
+        return None
+    try:
+        normalized = int(raw_value)
+    except (TypeError, ValueError):
+        try:
+            normalized = int(fallback)
+        except (TypeError, ValueError):
+            normalized = BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS
+    return max(5, normalized)
+
+
+def _coerce_blackjack_lan_timeout_penalty(raw_value, fallback):
+    try:
+        normalized = float(raw_value)
+    except (TypeError, ValueError):
+        try:
+            normalized = float(fallback)
+        except (TypeError, ValueError):
+            normalized = BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT
+    return max(0.0, min(100.0, normalized))
+
+
 def _normalize_blackjack_lan_settings(raw_settings):
     settings = _default_blackjack_lan_settings()
     if not isinstance(raw_settings, dict):
@@ -138,16 +164,14 @@ def _normalize_blackjack_lan_settings(raw_settings):
     settings["allow_spectators_by_default"] = bool(
         raw_settings.get("allow_spectators_by_default", settings["allow_spectators_by_default"])
     )
-    try:
-        timeout_seconds = int(raw_settings.get("turn_timeout_seconds", settings["turn_timeout_seconds"]))
-    except (TypeError, ValueError):
-        timeout_seconds = settings["turn_timeout_seconds"]
-    settings["turn_timeout_seconds"] = max(5, timeout_seconds)
-    try:
-        penalty_percent = float(raw_settings.get("timeout_penalty_percent", settings["timeout_penalty_percent"]))
-    except (TypeError, ValueError):
-        penalty_percent = settings["timeout_penalty_percent"]
-    settings["timeout_penalty_percent"] = max(0.0, min(100.0, penalty_percent))
+    settings["turn_timeout_seconds"] = _coerce_blackjack_lan_turn_timeout(
+        raw_settings.get("turn_timeout_seconds", settings["turn_timeout_seconds"]),
+        settings["turn_timeout_seconds"],
+    )
+    settings["timeout_penalty_percent"] = _coerce_blackjack_lan_timeout_penalty(
+        raw_settings.get("timeout_penalty_percent", settings["timeout_penalty_percent"]),
+        settings["timeout_penalty_percent"],
+    )
     return settings
 
 
@@ -177,6 +201,14 @@ def _default_blackjack_lan_table(table_id, settings=None):
         "turn_order": [],
         "turn_index": 0,
         "turn_started_epoch": 0.0,
+        "turn_timeout_seconds": _coerce_blackjack_lan_turn_timeout(
+            normalized_settings.get("turn_timeout_seconds", BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS),
+            BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS,
+        ),
+        "timeout_penalty_percent": _coerce_blackjack_lan_timeout_penalty(
+            normalized_settings.get("timeout_penalty_percent", BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT),
+            BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT,
+        ),
         "player_states": {},
         "history": [],
         "last_updated_epoch": 0.0,
@@ -412,6 +444,15 @@ def _normalize_blackjack_lan_table(raw_table, fallback_id, settings=None):
         table["turn_started_epoch"] = float(raw_table.get("turn_started_epoch", 0.0))
     except (TypeError, ValueError):
         table["turn_started_epoch"] = 0.0
+    table["turn_timeout_seconds"] = _coerce_blackjack_lan_turn_timeout(
+        raw_table.get("turn_timeout_seconds", table.get("turn_timeout_seconds")),
+        table.get("turn_timeout_seconds", BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS),
+        allow_none=True,
+    )
+    table["timeout_penalty_percent"] = _coerce_blackjack_lan_timeout_penalty(
+        raw_table.get("timeout_penalty_percent", table.get("timeout_penalty_percent")),
+        table.get("timeout_penalty_percent", BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT),
+    )
 
     raw_history = raw_table.get("history", [])
     if isinstance(raw_history, list):
@@ -649,7 +690,10 @@ def _blackjack_lan_eject_player_for_timeout_unlocked(data, table, player_name, s
         return
     player_state = table.get("player_states", {}).get(player_name, _default_blackjack_lan_player_state())
     bet = house_round_credit(player_state.get("bet", 0.0))
-    penalty_percent = float(settings.get("timeout_penalty_percent", BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT))
+    penalty_percent = _coerce_blackjack_lan_timeout_penalty(
+        table.get("timeout_penalty_percent", settings.get("timeout_penalty_percent", BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT)),
+        settings.get("timeout_penalty_percent", BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT),
+    )
     penalty = house_round_credit((bet * penalty_percent) / 100.0)
     account = data.get("accounts", {}).get(player_name)
     if isinstance(account, dict) and penalty > 0:
@@ -685,8 +729,13 @@ def _blackjack_lan_eject_player_for_timeout_unlocked(data, table, player_name, s
 def _blackjack_lan_enforce_timeout_for_table_unlocked(data, table, settings):
     if table.get("phase") != BLACKJACK_LAN_PHASE_PLAYER_TURNS or not bool(table.get("in_progress")):
         return
-    timeout_seconds = int(settings.get("turn_timeout_seconds", BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS))
-    timeout_seconds = max(5, timeout_seconds)
+    timeout_seconds = _coerce_blackjack_lan_turn_timeout(
+        table.get("turn_timeout_seconds", settings.get("turn_timeout_seconds", BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS)),
+        settings.get("turn_timeout_seconds", BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS),
+        allow_none=True,
+    )
+    if timeout_seconds is None:
+        return
     turn_started_epoch = float(table.get("turn_started_epoch", 0.0) or 0.0)
     if turn_started_epoch <= 0:
         table["turn_started_epoch"] = time.time()
@@ -2004,6 +2053,9 @@ def create_blackjack_lan_table(
     is_private=None,
     password=None,
     table_name=None,
+    turn_timeout_seconds=None,
+    timeout_penalty_percent=None,
+    disable_turn_timeout=False,
 ):
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
@@ -2029,6 +2081,18 @@ def create_blackjack_lan_table(
             table["password"] = str(password)
         if table_name is not None:
             table["name"] = _normalize_blackjack_lan_table_name(table_name, table_id)
+        if bool(disable_turn_timeout):
+            table["turn_timeout_seconds"] = None
+        elif turn_timeout_seconds is not None:
+            table["turn_timeout_seconds"] = _coerce_blackjack_lan_turn_timeout(
+                turn_timeout_seconds,
+                table.get("turn_timeout_seconds", settings.get("turn_timeout_seconds", BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS)),
+                allow_none=True,
+            )
+        table["timeout_penalty_percent"] = _coerce_blackjack_lan_timeout_penalty(
+            timeout_penalty_percent if timeout_penalty_percent is not None else table.get("timeout_penalty_percent"),
+            table.get("timeout_penalty_percent", settings.get("timeout_penalty_percent", BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT)),
+        )
         new_name_key = _blackjack_lan_table_name_key(table.get("name", ""))
         for existing in lan_state.get("tables", []):
             if _blackjack_lan_table_name_key(existing.get("name", "")) == new_name_key:
@@ -2081,6 +2145,9 @@ def update_blackjack_lan_table_settings(
     is_private=None,
     password=None,
     table_name=None,
+    turn_timeout_seconds=None,
+    timeout_penalty_percent=None,
+    disable_turn_timeout=None,
 ):
     normalized_id = _coerce_blackjack_table_id(table_id)
     if normalized_id is None:
@@ -2118,6 +2185,19 @@ def update_blackjack_lan_table_settings(
             table["password"] = str(password)
         if table_name is not None:
             table["name"] = _normalize_blackjack_lan_table_name(table_name, normalized_id)
+        if disable_turn_timeout is True:
+            table["turn_timeout_seconds"] = None
+        elif turn_timeout_seconds is not None:
+            table["turn_timeout_seconds"] = _coerce_blackjack_lan_turn_timeout(
+                turn_timeout_seconds,
+                table.get("turn_timeout_seconds", BLACKJACK_LAN_DEFAULT_TURN_TIMEOUT_SECONDS),
+                allow_none=True,
+            )
+        if timeout_penalty_percent is not None:
+            table["timeout_penalty_percent"] = _coerce_blackjack_lan_timeout_penalty(
+                timeout_penalty_percent,
+                table.get("timeout_penalty_percent", BLACKJACK_LAN_DEFAULT_TIMEOUT_PENALTY_PERCENT),
+            )
         new_name_key = _blackjack_lan_table_name_key(table.get("name", ""))
         for existing in lan_state.get("tables", []):
             if int(existing.get("id", -1)) == normalized_id:

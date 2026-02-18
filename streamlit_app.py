@@ -3,6 +3,7 @@
 from random import randint, shuffle
 import uuid
 import time
+import math
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -2822,6 +2823,86 @@ def _ensure_blackjack_shared_styles():
             padding-top: 0.38rem;
             border-top: 1px solid rgba(188, 233, 220, 0.2);
         }}
+        .bj-lan-ring {{
+            position: relative;
+            min-height: 470px;
+            border-radius: 16px;
+            overflow: hidden;
+            background:
+                radial-gradient(ellipse at center, rgba(26, 97, 79, 0.72) 0%, rgba(12, 53, 43, 0.84) 58%, rgba(8, 37, 31, 0.9) 100%);
+            border: 1px solid rgba(168, 225, 207, 0.24);
+        }}
+        .bj-lan-felt-oval {{
+            position: absolute;
+            left: 50%;
+            top: 55%;
+            transform: translate(-50%, -50%);
+            width: min(95%, 860px);
+            height: min(74%, 340px);
+            border-radius: 999px;
+            border: 2px solid rgba(194, 235, 222, 0.26);
+            box-shadow:
+                inset 0 0 0 2px rgba(14, 52, 44, 0.38),
+                inset 0 -18px 34px rgba(0, 0, 0, 0.24);
+            pointer-events: none;
+        }}
+        .bj-lan-dealer-seat {{
+            position: absolute;
+            left: 50%;
+            top: 12%;
+            transform: translate(-50%, -50%);
+            width: min(92%, 430px);
+            text-align: center;
+            z-index: 2;
+        }}
+        .bj-lan-dealer-seat .bj-hand {{
+            justify-content: center;
+        }}
+        .bj-lan-seats {{
+            position: absolute;
+            inset: 0;
+        }}
+        .bj-lan-seat {{
+            position: absolute;
+            transform: translate(-50%, -50%);
+            width: min(90vw, 280px);
+            max-width: 280px;
+            padding: 0.4rem 0.45rem 0.45rem 0.45rem;
+            border-radius: 12px;
+            background: rgba(6, 35, 29, 0.44);
+            border: 1px solid rgba(184, 232, 216, 0.2);
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+            text-align: center;
+            z-index: 2;
+        }}
+        .bj-lan-seat .bj-hand {{
+            justify-content: center;
+        }}
+        .bj-lan-seat-current {{
+            border-color: rgba(255, 231, 145, 0.92);
+            box-shadow:
+                0 0 0 2px rgba(255, 225, 120, 0.32),
+                0 0 16px rgba(255, 214, 79, 0.3),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+        }}
+        .bj-lan-seat-self {{
+            border-color: rgba(172, 236, 255, 0.86);
+            box-shadow:
+                0 0 0 1px rgba(105, 205, 236, 0.42),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+        }}
+        .bj-lan-turn-badge {{
+            display: inline-block;
+            margin-left: 0.35rem;
+            padding: 0.08rem 0.34rem;
+            border-radius: 999px;
+            font-size: 0.66rem;
+            font-weight: 800;
+            letter-spacing: 0.03em;
+            color: #1f1800;
+            background: linear-gradient(135deg, #ffe18a 0%, #f7c84a 100%);
+            vertical-align: middle;
+        }}
         .bj-row {{
             display: flex;
             align-items: center;
@@ -3010,6 +3091,16 @@ def _ensure_blackjack_shared_styles():
             .bj-table-wrap,
             .bj-lan-wrap {{
                 padding: 0.5rem;
+            }}
+            .bj-lan-ring {{
+                min-height: 520px;
+            }}
+            .bj-lan-seat {{
+                width: min(88vw, 235px);
+                max-width: 235px;
+            }}
+            .bj-lan-dealer-seat {{
+                width: min(92vw, 300px);
             }}
             .bj-card,
             .bj-deck,
@@ -3287,8 +3378,11 @@ def blackjack_lan_current_turn_player(table):
 def blackjack_lan_seconds_remaining(table, settings):
     if table.get("phase") != "player_turns" or not bool(table.get("in_progress")):
         return None
+    timeout_setting = table.get("turn_timeout_seconds", settings.get("turn_timeout_seconds", 30))
+    if timeout_setting is None:
+        return None
     try:
-        timeout_seconds = int(settings.get("turn_timeout_seconds", 30))
+        timeout_seconds = int(timeout_setting)
     except (TypeError, ValueError):
         timeout_seconds = 30
     timeout_seconds = max(5, timeout_seconds)
@@ -3314,7 +3408,7 @@ def blackjack_lan_ready_counts(table):
     return ready, len(players)
 
 
-def render_blackjack_lan_hands(table):
+def render_blackjack_lan_hands(table, viewer_player=None):
     _ensure_blackjack_shared_styles()
     dealer_cards = table.get("dealer_cards", [])
     reveal_dealer = table.get("phase") != "player_turns"
@@ -3328,8 +3422,46 @@ def render_blackjack_lan_hands(table):
     dealer_cards_html = blackjack_render_hand_html(dealer_cards, dealer_hidden_indexes, [], "dealer")
 
     current_turn_player = blackjack_lan_current_turn_player(table)
+    players = list(table.get("players", []))
+    viewer_in_players = isinstance(viewer_player, str) and viewer_player in players
+
+    ordered_players = []
+    if viewer_in_players:
+        ordered_players.append(viewer_player)
+        ordered_players.extend([name for name in players if name != viewer_player])
+    else:
+        ordered_players = players
+
+    seat_positions = {}
+    if viewer_in_players:
+        seat_positions[viewer_player] = (50.0, 88.0)
+        other_players = [name for name in ordered_players if name != viewer_player]
+        other_count = len(other_players)
+        if other_count == 1:
+            seat_positions[other_players[0]] = (50.0, 24.0)
+        elif other_count > 1:
+            for index, player_name in enumerate(other_players):
+                spread_progress = index / (other_count - 1)
+                angle_deg = 210.0 + (120.0 * spread_progress)
+                radians = math.radians(angle_deg)
+                x = 50.0 + (41.0 * math.cos(radians))
+                y = 56.0 + (31.0 * math.sin(radians))
+                seat_positions[player_name] = (x, y)
+    else:
+        player_count = len(ordered_players)
+        if player_count == 1:
+            seat_positions[ordered_players[0]] = (50.0, 82.0)
+        elif player_count > 1:
+            for index, player_name in enumerate(ordered_players):
+                spread_progress = index / (player_count - 1)
+                angle_deg = 205.0 + (130.0 * spread_progress)
+                radians = math.radians(angle_deg)
+                x = 50.0 + (42.0 * math.cos(radians))
+                y = 56.0 + (31.0 * math.sin(radians))
+                seat_positions[player_name] = (x, y)
+
     player_blocks = []
-    for player_name in table.get("players", []):
+    for player_name in ordered_players:
         player_state = table.get("player_states", {}).get(player_name, {})
         cards = player_state.get("cards", [])
         cards_html = blackjack_render_hand_html(cards, set(), [], "player")
@@ -3338,32 +3470,48 @@ def render_blackjack_lan_hands(table):
         bet = float(player_state.get("bet", 0.0))
         payout = float(player_state.get("payout", 0.0))
         result = player_state.get("result")
-        turn_badge = " [TURN]" if player_name == current_turn_player else ""
+        turn_badge = (
+            '<span class="bj-lan-turn-badge">TURN</span>'
+            if player_name == current_turn_player
+            else ""
+        )
+        you_label = " (You)" if viewer_in_players and player_name == viewer_player else ""
         result_text = f" | Result: {str(result).title()} | Payout: ${format_money(payout)}" if result else ""
         label = (
-            f"{player_name}{turn_badge} ({total})"
+            f"{player_name}{you_label} {turn_badge} ({total})"
             f" | Bet: ${format_money(bet)} | Status: {status}{result_text}"
         )
+        seat_x, seat_y = seat_positions.get(player_name, (50.0, 56.0))
+        seat_classes = ["bj-lan-seat"]
+        if player_name == current_turn_player:
+            seat_classes.append("bj-lan-seat-current")
+        if viewer_in_players and player_name == viewer_player:
+            seat_classes.append("bj-lan-seat-self")
         player_blocks.append(
             (
-                '<div class="bj-lan-player-block">'
+                f'<div class="{" ".join(seat_classes)}" style="left:{seat_x:.2f}%; top:{seat_y:.2f}%;">'
                 f'<div class="bj-row"><div class="bj-label">{label}</div></div>'
                 f'<div class="bj-row"><div class="bj-hand">{cards_html}</div></div>'
                 "</div>"
             )
         )
-    players_html = "".join(player_blocks) if player_blocks else "<div class='bj-empty-slot'>No players at this table.</div>"
+    players_html = "".join(player_blocks) if player_blocks else (
+        "<div class='bj-lan-seat' style='left:50%; top:64%;'><div class='bj-empty-slot'>No players at this table.</div></div>"
+    )
 
     st.markdown(
         f"""
-        <div class="bj-lan-wrap">
-            <div class="bj-row"><div class="bj-label">Dealer ({dealer_total_text})</div></div>
-            <div class="bj-row"><div class="bj-hand">{dealer_cards_html}</div></div>
-            <div class="bj-center">
+        <div class="bj-lan-wrap bj-lan-ring">
+            <div class="bj-lan-felt-oval"></div>
+            <div class="bj-lan-dealer-seat">
+                <div class="bj-row"><div class="bj-label">Dealer ({dealer_total_text})</div></div>
+                <div class="bj-row"><div class="bj-hand">{dealer_cards_html}</div></div>
+            </div>
+            <div class="bj-center" style="position:absolute; left:50%; top:52%; transform:translate(-50%, -50%); z-index:1;">
                 <div class="bj-deck">DECK</div>
                 <div class="bj-deck-count">{len(table.get("deck", []))} cards left</div>
             </div>
-            {players_html}
+            <div class="bj-lan-seats">{players_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -3623,6 +3771,32 @@ def blackjack_ui():
                         value=True,
                         key="blackjack_lan_create_allow_spectators",
                     )
+                    create_no_timer = st.checkbox(
+                        "No turn time requirement",
+                        value=False,
+                        key="blackjack_lan_create_no_timer",
+                    )
+                    if not create_no_timer:
+                        create_turn_timeout = st.number_input(
+                            "Turn timer (seconds)",
+                            min_value=5,
+                            max_value=300,
+                            value=int(lan_settings.get("turn_timeout_seconds", 30)),
+                            step=1,
+                            key="blackjack_lan_create_turn_timeout",
+                        )
+                    else:
+                        create_turn_timeout = None
+                    create_timeout_penalty = st.number_input(
+                        "Timeout penalty (% of player bet)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(lan_settings.get("timeout_penalty_percent", 25.0)),
+                        step=1.0,
+                        format="%.1f",
+                        key="blackjack_lan_create_timeout_penalty",
+                        disabled=create_no_timer,
+                    )
                     create_spectator_password_required = st.checkbox(
                         "Spectators must enter table password",
                         value=False,
@@ -3643,14 +3817,17 @@ def blackjack_ui():
                         create_password = ""
                     if st.button("Create table", key="blackjack_lan_create_submit", use_container_width=True):
                         ok, message = create_blackjack_lan_table(
-                            int(create_max_players),
-                            house_round_charge(float(create_min_bet)),
-                            house_round_charge(float(create_max_bet)) if create_max_bet is not None else None,
-                            create_allow_spectators,
-                            create_spectator_password_required,
-                            create_private,
-                            create_password,
-                            create_table_name,
+                            max_players=int(create_max_players),
+                            min_bet=house_round_charge(float(create_min_bet)),
+                            max_bet=house_round_charge(float(create_max_bet)) if create_max_bet is not None else None,
+                            allow_spectators=create_allow_spectators,
+                            spectators_require_password=create_spectator_password_required,
+                            is_private=create_private,
+                            password=create_password,
+                            table_name=create_table_name,
+                            turn_timeout_seconds=int(create_turn_timeout) if create_turn_timeout is not None else None,
+                            timeout_penalty_percent=float(create_timeout_penalty),
+                            disable_turn_timeout=bool(create_no_timer),
                         )
                         if ok:
                             st.success(message)
@@ -3681,6 +3858,10 @@ def blackjack_ui():
                 phase_label = blackjack_lan_phase_label(table.get("phase"))
                 min_bet = float(table.get("min_bet", 0.01))
                 max_bet = table.get("max_bet")
+                table_turn_timeout = table.get("turn_timeout_seconds", lan_settings.get("turn_timeout_seconds", 30))
+                table_timeout_penalty = float(
+                    table.get("timeout_penalty_percent", lan_settings.get("timeout_penalty_percent", 25.0))
+                )
                 can_spectate_table = global_spectators_enabled and bool(table.get("allow_spectators", True))
                 is_private = bool(table.get("is_private", False))
                 spectators_require_password = bool(table.get("spectators_require_password", False))
@@ -3691,6 +3872,12 @@ def blackjack_ui():
                     st.caption(f"Bet limits: min ${format_money(min_bet)} | max none")
                 else:
                     st.caption(f"Bet limits: min ${format_money(min_bet)} | max ${format_money(float(max_bet))}")
+                if table_turn_timeout is None:
+                    st.caption("Turn timer: none")
+                else:
+                    st.caption(
+                        f"Turn timer: {int(table_turn_timeout)}s | Timeout penalty: {table_timeout_penalty:.1f}%"
+                    )
                 if players:
                     st.caption("Players: " + ", ".join(players))
                 else:
@@ -3797,19 +3984,28 @@ def blackjack_ui():
         current_turn_player = blackjack_lan_current_turn_player(table_to_view)
         current_balance = get_account_value(account)
         seconds_left = blackjack_lan_seconds_remaining(table_to_view, lan_settings)
-        timer_text = f"{seconds_left}s" if seconds_left is not None else "-"
+        table_turn_timeout = table_to_view.get("turn_timeout_seconds", lan_settings.get("turn_timeout_seconds", 30))
+        timer_text = f"{seconds_left}s" if seconds_left is not None else ("No timer" if table_turn_timeout is None else "-")
         st.caption(
             f"Round {int(table_to_view.get('round', 0))} | "
             f"{blackjack_lan_phase_label(table_to_view.get('phase'))} | "
             f"Turn: {current_turn_player or '-'} ({timer_text}) | "
             f"Balance: ${format_money(current_balance) if current_balance is not None else 'N/A'}"
         )
-        penalty_percent = float(lan_settings.get("timeout_penalty_percent", 25.0))
+        penalty_percent = float(
+            table_to_view.get("timeout_penalty_percent", lan_settings.get("timeout_penalty_percent", 25.0))
+        )
+        timeout_caption = (
+            "No timer"
+            if table_turn_timeout is None
+            else f"{int(table_turn_timeout)}s timer"
+        )
         st.caption(
             "Players: "
             + (", ".join(players) if players else "No players")
             + (f" | Queue: {', '.join(pending_players)}" if pending_players else "")
-            + f" | Timeout penalty: {penalty_percent:.1f}% + ejection"
+            + f" | {timeout_caption}"
+            + (f" | Timeout penalty: {penalty_percent:.1f}% + ejection" if table_turn_timeout is not None else "")
         )
         if membership == "pending":
             st.info("A hand is currently in progress. You will join automatically on the next hand.")
@@ -3864,7 +4060,7 @@ def blackjack_ui():
             with ready_count_col:
                 st.caption(f"{ready_count}/{total_players} ready")
 
-        render_blackjack_lan_hands(table_to_view)
+        render_blackjack_lan_hands(table_to_view, viewer_player=account)
 
         if (
             (not is_spectator_view)
