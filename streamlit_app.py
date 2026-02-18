@@ -1135,7 +1135,17 @@ def init_state():
     st.session_state.setdefault("current_account", None)
     st.session_state.setdefault("client_session_id", uuid.uuid4().hex)
     st.session_state.setdefault("account_session_notice", None)
-    st.session_state.setdefault("odds", load_saved_odds())
+    st.session_state.setdefault("storage_unavailable", False)
+    st.session_state.setdefault("storage_unavailable_message", "")
+    try:
+        loaded_odds = load_saved_odds()
+        st.session_state["storage_unavailable"] = False
+        st.session_state["storage_unavailable_message"] = ""
+    except Exception as exc:
+        loaded_odds = st.session_state.get("odds", 1.5)
+        st.session_state["storage_unavailable"] = True
+        st.session_state["storage_unavailable_message"] = str(exc)
+    st.session_state.setdefault("odds", loaded_odds)
     st.session_state.setdefault("active_action", "Home")
     st.session_state.setdefault("redirect_to_home", False)
     st.session_state.setdefault("show_auth_flow", False)
@@ -1156,6 +1166,8 @@ def init_state():
     st.session_state.setdefault("blackjack_round", None)
     st.session_state.setdefault("blackjack_lan_spectate_table_id", None)
     st.session_state.setdefault("blackjack_lan_spectate_password", "")
+    st.session_state.setdefault("blackjack_multiplayer_guest_account", None)
+    st.session_state.setdefault("blackjack_multiplayer_guest_setup", False)
     st.session_state.setdefault("blackjack_pending_bet", None)
     st.session_state.setdefault("blackjack_pending_replay_bet", None)
     st.session_state.setdefault("blackjack_guest_total_net", 0.0)
@@ -1185,8 +1197,14 @@ def _current_session_id():
 def _sign_out_current_account(session_notice=None):
     account = st.session_state.get("current_account")
     if account:
-        auto_remove_blackjack_lan_player(account)
-        release_account_session(account, _current_session_id())
+        try:
+            auto_remove_blackjack_lan_player(account)
+        except Exception:
+            pass
+        try:
+            release_account_session(account, _current_session_id())
+        except Exception:
+            pass
 
     st.session_state["current_account"] = None
     st.session_state["client_session_id"] = None
@@ -1209,7 +1227,13 @@ def _enforce_account_session_ownership():
     account = st.session_state.get("current_account")
     if account is None:
         return
-    acquired, reason = acquire_account_session(account, _current_session_id())
+    try:
+        acquired, reason = acquire_account_session(account, _current_session_id())
+    except Exception:
+        _sign_out_current_account(
+            session_notice="Account storage is temporarily unavailable. You were signed out. Guest mode is still available."
+        )
+        return
     if acquired:
         return
     if reason == "in_use":
@@ -1229,16 +1253,49 @@ def _render_account_session_notice():
     st.session_state["account_session_notice"] = None
 
 
+def _render_storage_unavailable_notice():
+    if not st.session_state.get("storage_unavailable", False):
+        return
+    st.warning(
+        "Account storage is temporarily unavailable. Sign-in and saved accounts are disabled right now, "
+        "but Guest mode still works."
+    )
+
+
 def _auto_remove_lan_player_when_not_in_blackjack():
-    account = st.session_state.get("current_account")
-    if not account:
+    current_account = st.session_state.get("current_account")
+    guest_multiplayer_account = st.session_state.get("blackjack_multiplayer_guest_account")
+    active_player = current_account or guest_multiplayer_account
+    if not active_player:
         return
     if st.session_state.get("active_action") == "Blackjack" and not st.session_state.get("show_auth_flow", False):
         return
-    joined_table = find_blackjack_lan_table_for_player(account)
+    joined_table = find_blackjack_lan_table_for_player(active_player)
     if joined_table is None:
         return
-    auto_remove_blackjack_lan_player(account)
+    auto_remove_blackjack_lan_player(active_player)
+
+
+def _clear_blackjack_multiplayer_guest_account(delete_record=True):
+    guest_account = st.session_state.get("blackjack_multiplayer_guest_account")
+    if not guest_account:
+        st.session_state["blackjack_multiplayer_guest_setup"] = False
+        return
+    try:
+        auto_remove_blackjack_lan_player(guest_account)
+    except Exception:
+        pass
+    try:
+        release_account_session(guest_account, _current_session_id())
+    except Exception:
+        pass
+    if delete_record:
+        try:
+            delete_account(guest_account)
+        except Exception:
+            pass
+    st.session_state["blackjack_multiplayer_guest_account"] = None
+    st.session_state["blackjack_multiplayer_guest_setup"] = False
 
 
 def current_balance():
@@ -1268,6 +1325,7 @@ def end_guest_session(set_completion_message=False):
     st.session_state["blackjack_pending_bet"] = None
     st.session_state["blackjack_pending_replay_bet"] = None
     st.session_state["blackjack_guest_total_net"] = 0.0
+    _clear_blackjack_multiplayer_guest_account(delete_record=True)
 
 
 def is_debt_allowed():
@@ -1323,7 +1381,10 @@ def is_admin_user():
         return False
     if current_account == ADMIN_ACCOUNT_NAME:
         return True
-    return bool(get_account_admin_status(current_account))
+    try:
+        return bool(get_account_admin_status(current_account))
+    except Exception:
+        return False
 
 
 def can_create_admins():
@@ -1422,7 +1483,13 @@ def render_top_controls():
         if active_action == "Home" and not show_auth_flow:
             sign_in_col, _spacer = st.columns([1.22, 4.97])
             with sign_in_col:
-                if st.button("Sign in / Create Account", key="top_sign_in_create", use_container_width=True):
+                sign_in_disabled = bool(st.session_state.get("storage_unavailable", False))
+                if st.button(
+                    "Sign in / Create Account",
+                    key="top_sign_in_create",
+                    use_container_width=True,
+                    disabled=sign_in_disabled,
+                ):
                     st.session_state["show_auth_flow"] = True
                     st.session_state["auth_flow_mode"] = None
                     st.session_state["pending_new_account"] = None
@@ -1607,6 +1674,9 @@ def render_back_button():
 
 
 def auth_ui():
+    if st.session_state.get("storage_unavailable", False):
+        st.error("Sign-in and account creation are temporarily unavailable. Please use Guest mode.")
+        return
     st.subheader("Sign In / Create Account")
     flow_mode = st.session_state.get("auth_flow_mode")
 
@@ -3445,12 +3515,22 @@ def blackjack_ui():
 
     st.subheader("Blackjack")
     account = st.session_state.get("current_account")
+    if account is not None and st.session_state.get("blackjack_multiplayer_guest_account"):
+        _clear_blackjack_multiplayer_guest_account(delete_record=True)
     guest_mode_active = st.session_state.get("guest_mode_active", False)
 
     mode = st.session_state.get("blackjack_mode_select", "Single Player")
+    if mode == "Remote Multiplayer (LAN)":
+        mode = "Multiplayer"
+        st.session_state["blackjack_mode_select"] = mode
+    guest_multiplayer_account = st.session_state.get("blackjack_multiplayer_guest_account")
+    if mode != "Multiplayer" and guest_multiplayer_account:
+        _clear_blackjack_multiplayer_guest_account(delete_record=True)
+        guest_multiplayer_account = None
     joined_lan_table = None
-    if mode == "Remote Multiplayer (LAN)" and account is not None:
-        joined_lan_table = find_blackjack_lan_table_for_player(account)
+    multiplayer_player = account or guest_multiplayer_account
+    if mode == "Multiplayer" and multiplayer_player is not None:
+        joined_lan_table = find_blackjack_lan_table_for_player(multiplayer_player)
     is_lan_table_locked = joined_lan_table is not None
     in_progress_round = st.session_state.get("blackjack_round")
     is_blackjack_round_active = (
@@ -3463,7 +3543,7 @@ def blackjack_ui():
     if is_blackjack_round_active:
         st.markdown("**Mode selection is locked while this round is in progress.**")
     elif is_lan_table_locked:
-        st.markdown("**Mode selection is locked while you are seated at a LAN table. Leave table to switch modes.**")
+        st.markdown("**Mode selection is locked while you are seated at a multiplayer table. Leave table to switch modes.**")
     else:
         st.markdown("**Choose a mode:**")
         col1, col2, col3 = st.columns(3)
@@ -3476,8 +3556,8 @@ def blackjack_ui():
                 st.session_state["blackjack_mode_select"] = "Hotseat Multiplayer"
                 st.rerun()
         with col3:
-            if st.button("Remote Multiplayer (LAN)", key="mode_remote", use_container_width=True):
-                st.session_state["blackjack_mode_select"] = "Remote Multiplayer (LAN)"
+            if st.button("Multiplayer", key="mode_remote", use_container_width=True):
+                st.session_state["blackjack_mode_select"] = "Multiplayer"
                 st.rerun()
     mode = st.session_state.get("blackjack_mode_select", "Single Player")
     st.markdown(f"<div style='margin-top: 0.5rem; font-weight: bold; color: var(--text-color);'>Current mode: <span style='color: var(--primary-color);'>{mode}</span></div>", unsafe_allow_html=True)
@@ -3544,11 +3624,65 @@ def blackjack_ui():
         st.info("Hotseat multiplayer mode coming soon!")
         return
 
-    elif mode == "Remote Multiplayer (LAN)":
-        st.markdown("### Multiplayer Tables (LAN)")
-        if account is None:
-            st.warning("Sign in to use LAN multiplayer tables.")
-            return
+    elif mode == "Multiplayer":
+        st.markdown("### Multiplayer Tables")
+        if multiplayer_player is None:
+            if not st.session_state.get("blackjack_multiplayer_guest_setup", False):
+                st.warning("You are not signed in. Start a guest multiplayer session to join tables.")
+                if st.button("Start as guest", key="blackjack_multiplayer_guest_start", use_container_width=True):
+                    st.session_state["blackjack_multiplayer_guest_setup"] = True
+                    st.rerun()
+                return
+
+            with st.form("blackjack_multiplayer_guest_setup_form"):
+                guest_buy_in = st.number_input(
+                    "Guest multiplayer starting balance ($)",
+                    min_value=0.0,
+                    value=20.0,
+                    step=1.0,
+                    format="%.2f",
+                    key="blackjack_multiplayer_guest_starting_balance",
+                )
+                guest_submitted = st.form_submit_button("Start guest multiplayer")
+            if not guest_submitted:
+                return
+            guest_alias = f"guest_multiplayer_{uuid.uuid4().hex[:10]}"
+            try:
+                created = create_account_record(guest_alias, house_round_credit(float(guest_buy_in)), "")
+            except Exception:
+                st.error("Guest multiplayer is unavailable right now. Please try again later.")
+                return
+            if not created:
+                st.error("Could not start guest multiplayer session. Please try again.")
+                return
+            try:
+                acquired, reason = acquire_account_session(guest_alias, _current_session_id())
+            except Exception:
+                delete_account(guest_alias)
+                st.error("Guest multiplayer is unavailable right now. Please try again later.")
+                return
+            if not acquired:
+                delete_account(guest_alias)
+                if reason == "in_use":
+                    st.error("Guest session alias collision. Please try again.")
+                else:
+                    st.error("Could not start guest multiplayer session.")
+                return
+            st.session_state["blackjack_multiplayer_guest_account"] = guest_alias
+            st.session_state["blackjack_multiplayer_guest_setup"] = False
+            st.success(f"Guest multiplayer started with ${format_money(guest_buy_in)}.")
+            st.rerun()
+
+        account = multiplayer_player
+        if st.session_state.get("blackjack_multiplayer_guest_account") == account:
+            acquired, reason = acquire_account_session(account, _current_session_id())
+            if not acquired:
+                _clear_blackjack_multiplayer_guest_account(delete_record=True)
+                if reason == "in_use":
+                    st.error("Your guest multiplayer session is already active elsewhere. Start a new guest session.")
+                else:
+                    st.error("Your guest multiplayer session expired. Start a new guest session.")
+                return
 
         lan_settings = get_blackjack_lan_settings()
         tables = get_blackjack_lan_tables()
@@ -3669,7 +3803,7 @@ def blackjack_ui():
                 key="blackjack_lan_table_search",
                 placeholder="Type a table name",
             ).strip().lower()
-            st.caption("Join a table to play with other signed-in users on the network URL.")
+            st.caption("Join a table to play multiplayer with other users on this app URL.")
             visible_tables = []
             for table in tables:
                 table_id = int(table["id"])
@@ -3795,6 +3929,8 @@ def blackjack_ui():
                     st.success(message)
                 else:
                     st.error(message)
+                if st.session_state.get("blackjack_multiplayer_guest_account") == account:
+                    _clear_blackjack_multiplayer_guest_account(delete_record=True)
                 st.rerun()
 
         players = table_to_view.get("players", [])
@@ -4198,7 +4334,7 @@ def blackjack_lan_admin_ui():
         st.error("Only the admin account can access this option.")
         return
 
-    st.subheader("LAN Blackjack Table Controls")
+    st.subheader("Multiplayer Blackjack Table Controls")
     settings = get_blackjack_lan_settings()
     tables = get_blackjack_lan_tables()
 
@@ -4535,6 +4671,7 @@ def home_ui():
             "Leaderboards",
             "home_leaderboards",
             "home_card_leaderboards",
+            disabled=storage_unavailable,
         )
     with account_col:
         st.caption("Account & Tools")
@@ -4543,12 +4680,14 @@ def home_ui():
             "Add/withdraw money",
             "home_add_withdraw",
             "home_card_add_withdraw",
+            disabled=storage_unavailable,
         )
         _home_action_button(
             "Look up account",
             "Look up account",
             "home_lookup",
             "home_card_lookup",
+            disabled=storage_unavailable,
         )
         _home_action_button(
             "Calculate odds",
@@ -4606,6 +4745,13 @@ def main():
     autosave_ui_settings_for_current_account()
     apply_theme()
     _render_account_session_notice()
+    _render_storage_unavailable_notice()
+    if st.session_state.get("storage_unavailable", False) and st.session_state.get("current_account"):
+        _sign_out_current_account(
+            session_notice="Account storage is temporarily unavailable. You were signed out. Guest mode is still available."
+        )
+        st.rerun()
+        return
     if (
         st.session_state.get("guest_mode_active", False)
         and st.session_state.get("active_action") not in {"Play game", "Blackjack"}
@@ -4625,6 +4771,19 @@ def main():
         "Change password",
         "Leaderboards",
     }
+    if st.session_state.get("storage_unavailable", False):
+        allowed_actions -= {
+            "Look up account",
+            "Add/withdraw money",
+            "Change profile picture",
+            "Change password",
+            "Leaderboards",
+            "House odds",
+            "Game limits",
+            "Account tools",
+        }
+        st.session_state["show_auth_flow"] = False
+        st.session_state["auth_flow_mode"] = None
     if is_admin_user():
         allowed_actions.update({"House odds", "Account tools"})
         if can_create_admins():
@@ -4677,3 +4836,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    storage_unavailable = bool(st.session_state.get("storage_unavailable", False))

@@ -2099,7 +2099,7 @@ def update_blackjack_lan_global_settings(
         lan_state["settings"] = settings
         data["blackjack_lan"] = lan_state
         _write_data_unlocked(data)
-        return True, "LAN timeout settings updated."
+        return True, "Multiplayer timeout settings updated."
 
 
 def join_blackjack_lan_table(table_id, player_name, password=""):
@@ -2279,8 +2279,8 @@ def auto_remove_blackjack_lan_player(player_name):
         data["blackjack_lan"] = lan_state
         _write_data_unlocked(data)
         if removed:
-            return True, "Player was removed from active LAN table(s)."
-        return True, "Player was not in any LAN table."
+            return True, "Player was removed from active multiplayer table(s)."
+        return True, "Player was not in any multiplayer table."
 
 
 def set_blackjack_lan_player_bet(table_id, player_name, bet):
