@@ -439,7 +439,8 @@ def _fragment_or_passthrough(func):
 
 
 def _fast_rerun(force=False):
-    if not force:
+    should_force = bool(force) or st.session_state.get("active_action") == "Blackjack"
+    if not should_force:
         return
     rerun_func = getattr(st, "rerun", None)
     if not callable(rerun_func):
