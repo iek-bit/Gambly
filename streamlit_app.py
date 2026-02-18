@@ -4,6 +4,7 @@ from random import randint, shuffle
 import uuid
 import time
 import math
+import re
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -2832,6 +2833,27 @@ def _ensure_blackjack_shared_styles():
                 radial-gradient(ellipse at center, rgba(26, 97, 79, 0.72) 0%, rgba(12, 53, 43, 0.84) 58%, rgba(8, 37, 31, 0.9) 100%);
             border: 1px solid rgba(168, 225, 207, 0.24);
         }}
+        .bj-lan-timer {{
+            position: absolute;
+            left: 0.58rem;
+            top: 0.5rem;
+            z-index: 4;
+            border-radius: 10px;
+            padding: 0.2rem 0.48rem;
+            font-size: 0.75rem;
+            font-weight: 800;
+            letter-spacing: 0.03em;
+            color: rgba(230, 252, 245, 0.98);
+            border: 1px solid rgba(184, 239, 221, 0.34);
+            background: rgba(13, 56, 47, 0.62);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }}
+        .bj-lan-timer-danger {{
+            color: #fff5f5;
+            border-color: rgba(255, 152, 152, 0.74);
+            background: rgba(143, 22, 22, 0.78);
+            box-shadow: 0 4px 14px rgba(153, 24, 24, 0.42);
+        }}
         .bj-lan-felt-oval {{
             position: absolute;
             left: 50%;
@@ -3364,6 +3386,63 @@ def blackjack_lan_phase_label(phase):
     return labels.get(str(phase), "Unknown")
 
 
+def blackjack_ui_player_name(name):
+    text = str(name).strip()
+    if not text:
+        return text
+    if text.startswith("guest_"):
+        return "guest"
+    return text
+
+
+def blackjack_ui_guest_alias_map(table):
+    guest_ids = set()
+    if isinstance(table, dict):
+        for player_name in table.get("players", []):
+            text = str(player_name).strip()
+            if text.startswith("guest_"):
+                guest_ids.add(text)
+        for player_name in table.get("pending_players", []):
+            text = str(player_name).strip()
+            if text.startswith("guest_"):
+                guest_ids.add(text)
+        for player_name in table.get("turn_order", []):
+            text = str(player_name).strip()
+            if text.startswith("guest_"):
+                guest_ids.add(text)
+        for player_name in table.get("player_states", {}).keys():
+            text = str(player_name).strip()
+            if text.startswith("guest_"):
+                guest_ids.add(text)
+        for entry in table.get("history", []):
+            for matched_name in re.findall(r"\bguest_[A-Za-z0-9_]+\b", str(entry)):
+                guest_ids.add(matched_name)
+
+    sorted_guest_ids = sorted(guest_ids)
+    if len(sorted_guest_ids) <= 1:
+        return {guest_id: "guest" for guest_id in sorted_guest_ids}
+    return {guest_id: f"guest{index + 1}" for index, guest_id in enumerate(sorted_guest_ids)}
+
+
+def blackjack_ui_player_name_with_alias(name, guest_alias_map=None):
+    text = str(name).strip()
+    if not text:
+        return text
+    if text.startswith("guest_"):
+        if isinstance(guest_alias_map, dict) and text in guest_alias_map:
+            return guest_alias_map[text]
+        return "guest"
+    return text
+
+
+def blackjack_ui_format_history_entry(entry, guest_alias_map=None):
+    return re.sub(
+        r"\bguest_[A-Za-z0-9_]+\b",
+        lambda match: blackjack_ui_player_name_with_alias(match.group(0), guest_alias_map),
+        str(entry),
+    )
+
+
 def blackjack_lan_current_turn_player(table):
     turn_order = table.get("turn_order", [])
     turn_index = int(table.get("turn_index", 0))
@@ -3393,7 +3472,7 @@ def blackjack_lan_seconds_remaining(table, settings):
     if started_epoch <= 0:
         return timeout_seconds
     elapsed = time.time() - started_epoch
-    remaining = int(timeout_seconds - elapsed)
+    remaining = math.ceil(timeout_seconds - elapsed)
     return max(0, remaining)
 
 
@@ -3408,7 +3487,7 @@ def blackjack_lan_ready_counts(table):
     return ready, len(players)
 
 
-def render_blackjack_lan_hands(table, viewer_player=None):
+def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, timer_seconds=None):
     _ensure_blackjack_shared_styles()
     dealer_cards = table.get("dealer_cards", [])
     reveal_dealer = table.get("phase") != "player_turns"
@@ -3477,8 +3556,9 @@ def render_blackjack_lan_hands(table, viewer_player=None):
         )
         you_label = " (You)" if viewer_in_players and player_name == viewer_player else ""
         result_text = f" | Result: {str(result).title()} | Payout: ${format_money(payout)}" if result else ""
+        display_name = blackjack_ui_player_name_with_alias(player_name, guest_alias_map)
         label = (
-            f"{player_name}{you_label} {turn_badge} ({total})"
+            f"{display_name}{you_label} {turn_badge} ({total})"
             f" | Bet: ${format_money(bet)} | Status: {status}{result_text}"
         )
         seat_x, seat_y = seat_positions.get(player_name, (50.0, 56.0))
@@ -3499,9 +3579,16 @@ def render_blackjack_lan_hands(table, viewer_player=None):
         "<div class='bj-lan-seat' style='left:50%; top:64%;'><div class='bj-empty-slot'>No players at this table.</div></div>"
     )
 
+    timer_html = ""
+    if timer_seconds is not None:
+        timer_value = max(0, int(timer_seconds))
+        timer_class = "bj-lan-timer bj-lan-timer-danger" if timer_value <= 10 else "bj-lan-timer"
+        timer_html = f'<div class="{timer_class}">TIME: {timer_value}s</div>'
+
     st.markdown(
         f"""
         <div class="bj-lan-wrap bj-lan-ring">
+            {timer_html}
             <div class="bj-lan-felt-oval"></div>
             <div class="bj-lan-dealer-seat">
                 <div class="bj-row"><div class="bj-label">Dealer ({dealer_total_text})</div></div>
@@ -3852,6 +3939,7 @@ def blackjack_ui():
             for table in visible_tables:
                 table_id = int(table["id"])
                 table_name = str(table.get("name", f"Table {table_id}")).strip() or f"Table {table_id}"
+                guest_alias_map = blackjack_ui_guest_alias_map(table)
                 players = table.get("players", [])
                 pending_players = table.get("pending_players", [])
                 max_players = int(table.get("max_players", 5))
@@ -3879,11 +3967,22 @@ def blackjack_ui():
                         f"Turn timer: {int(table_turn_timeout)}s | Timeout penalty: {table_timeout_penalty:.1f}%"
                     )
                 if players:
-                    st.caption("Players: " + ", ".join(players))
+                    st.caption(
+                        "Players: "
+                        + ", ".join(
+                            blackjack_ui_player_name_with_alias(player, guest_alias_map) for player in players
+                        )
+                    )
                 else:
                     st.caption("No players yet.")
                 if pending_players:
-                    st.caption("Queued for next hand: " + ", ".join(pending_players))
+                    st.caption(
+                        "Queued for next hand: "
+                        + ", ".join(
+                            blackjack_ui_player_name_with_alias(player, guest_alias_map)
+                            for player in pending_players
+                        )
+                    )
                 if is_private:
                     st.caption("Private table (password required).")
                 elif spectators_require_password:
@@ -3981,6 +4080,7 @@ def blackjack_ui():
 
         players = table_to_view.get("players", [])
         pending_players = table_to_view.get("pending_players", [])
+        guest_alias_map = blackjack_ui_guest_alias_map(table_to_view)
         current_turn_player = blackjack_lan_current_turn_player(table_to_view)
         current_balance = get_account_value(account)
         seconds_left = blackjack_lan_seconds_remaining(table_to_view, lan_settings)
@@ -3989,7 +4089,7 @@ def blackjack_ui():
         st.caption(
             f"Round {int(table_to_view.get('round', 0))} | "
             f"{blackjack_lan_phase_label(table_to_view.get('phase'))} | "
-            f"Turn: {current_turn_player or '-'} ({timer_text}) | "
+            f"Turn: {blackjack_ui_player_name_with_alias(current_turn_player, guest_alias_map) if current_turn_player else '-'} ({timer_text}) | "
             f"Balance: ${format_money(current_balance) if current_balance is not None else 'N/A'}"
         )
         penalty_percent = float(
@@ -4002,8 +4102,19 @@ def blackjack_ui():
         )
         st.caption(
             "Players: "
-            + (", ".join(players) if players else "No players")
-            + (f" | Queue: {', '.join(pending_players)}" if pending_players else "")
+            + (
+                ", ".join(blackjack_ui_player_name_with_alias(player, guest_alias_map) for player in players)
+                if players
+                else "No players"
+            )
+            + (
+                " | Queue: "
+                + ", ".join(
+                    blackjack_ui_player_name_with_alias(player, guest_alias_map) for player in pending_players
+                )
+                if pending_players
+                else ""
+            )
             + f" | {timeout_caption}"
             + (f" | Timeout penalty: {penalty_percent:.1f}% + ejection" if table_turn_timeout is not None else "")
         )
@@ -4060,7 +4171,12 @@ def blackjack_ui():
             with ready_count_col:
                 st.caption(f"{ready_count}/{total_players} ready")
 
-        render_blackjack_lan_hands(table_to_view, viewer_player=account)
+        render_blackjack_lan_hands(
+            table_to_view,
+            viewer_player=account,
+            guest_alias_map=guest_alias_map,
+            timer_seconds=seconds_left,
+        )
 
         if (
             (not is_spectator_view)
@@ -4095,7 +4211,9 @@ def blackjack_ui():
                         _fast_rerun()
             else:
                 if current_turn_player:
-                    st.caption(f"Waiting for {current_turn_player} to act.")
+                    st.caption(
+                        f"Waiting for {blackjack_ui_player_name_with_alias(current_turn_player, guest_alias_map)} to act."
+                    )
                 else:
                     st.caption("Waiting for dealer resolution.")
 
@@ -4118,7 +4236,16 @@ def blackjack_ui():
                 st.write("No actions yet.")
             else:
                 for entry in history[-25:]:
-                    st.write(entry)
+                    st.write(blackjack_ui_format_history_entry(entry, guest_alias_map))
+        if (
+            table_turn_timeout is not None
+            and table_to_view.get("phase") == "player_turns"
+            and bool(table_to_view.get("in_progress"))
+            and seconds_left is not None
+            and seconds_left > 0
+        ):
+            time.sleep(1.0)
+            _fast_rerun()
         return
 
     if round_state is None:
