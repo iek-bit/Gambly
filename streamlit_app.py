@@ -2803,11 +2803,7 @@ def _blackjack_style_signature():
 
 
 def _ensure_blackjack_shared_styles():
-    signature = _blackjack_style_signature()
-    if st.session_state.get("_blackjack_shared_style_signature") == signature:
-        return
-
-    bj_label_color, bj_deck_color, bj_deck_count_color, bj_empty_slot_color = signature
+    bj_label_color, bj_deck_color, bj_deck_count_color, bj_empty_slot_color = _blackjack_style_signature()
     st.markdown(
         f"""
         <style>
@@ -3050,9 +3046,6 @@ def _ensure_blackjack_shared_styles():
         """,
         unsafe_allow_html=True,
     )
-    st.session_state["_blackjack_shared_style_signature"] = signature
-
-
 def render_blackjack_table(round_state):
     _ensure_blackjack_shared_styles()
     dealer_cards = round_state.get("dealer_cards", [])
