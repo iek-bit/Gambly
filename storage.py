@@ -2110,7 +2110,8 @@ def create_blackjack_lan_table(
 
         data["blackjack_lan"] = lan_state
         _write_data_unlocked(data)
-        return True, f"Created table {table_id}."
+        created_table_name = str(table.get("name", f"Table {table_id}")).strip() or f"Table {table_id}"
+        return True, f"Created table: {created_table_name}"
 
 
 def delete_blackjack_lan_table(table_id):
