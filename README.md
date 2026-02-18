@@ -73,7 +73,6 @@ create table if not exists public.app_state (
 
 Notes:
 - If Supabase has no row yet, the app writes/reads row id `1`.
-- If `accounts.json` exists locally and Supabase is empty, first run auto-migrates local data into Supabase.
 
 ## Account File Format
 App state format (used for local JSON fallback and Supabase `data` payload):

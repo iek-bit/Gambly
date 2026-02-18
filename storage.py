@@ -1406,25 +1406,14 @@ def _normalize_loaded_data(loaded):
     return data
 
 
-def _migrate_local_state_to_supabase_unlocked():
-    if not os.path.exists(ACCOUNTS_FILE):
-        return None
-    local_loaded = _read_local_data_unlocked()
-    normalized = _normalize_loaded_data(local_loaded)
-    _write_supabase_state_unlocked(normalized)
-    return normalized
-
-
 def _load_data_unlocked():
     backend = _get_storage_backend()
     try:
         if backend.get("type") == "supabase":
             loaded = _read_supabase_state_unlocked()
             if loaded is None:
-                migrated = _migrate_local_state_to_supabase_unlocked()
-                if migrated is not None:
-                    return migrated
                 return None
+            return _normalize_loaded_data(loaded)
         else:
             loaded = _read_local_data_unlocked()
         return _normalize_loaded_data(loaded)
