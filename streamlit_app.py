@@ -4018,8 +4018,8 @@ def blackjack_ui():
                 can_spectate_table = global_spectators_enabled and bool(table.get("allow_spectators", True))
                 is_private = bool(table.get("is_private", False))
                 spectators_require_password = bool(table.get("spectators_require_password", False))
-                st.write(
-                    f"{table_name} (ID {table_id}) | {len(players)}/{max_players} players | {phase_label}"
+                st.markdown(
+                    f"**{table_name}** | {len(players)}/{max_players} players | {phase_label}"
                 )
                 if max_bet is None:
                     st.caption(f"Bet limits: min ${format_money(min_bet)} | max none")
