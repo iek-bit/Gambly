@@ -3837,6 +3837,7 @@ def blackjack_ui():
             _fast_rerun()
 
         account = multiplayer_player
+        is_guest_multiplayer_user = st.session_state.get("blackjack_multiplayer_guest_account") == account
         if st.session_state.get("blackjack_multiplayer_guest_account") == account:
             acquired, reason = acquire_account_session(account, _current_session_id())
             if not acquired:
@@ -3880,6 +3881,9 @@ def blackjack_ui():
         if joined_table is None and spectate_table is None:
             if joined_table is None and spectate_table is None:
                 create_menu_open = bool(st.session_state.get("blackjack_lan_create_menu_open", False))
+                if is_guest_multiplayer_user and create_menu_open:
+                    st.session_state["blackjack_lan_create_menu_open"] = False
+                    create_menu_open = False
                 create_notice = st.session_state.get("blackjack_lan_create_notice")
                 if create_notice:
                     st.success(str(create_notice))
@@ -4007,9 +4011,12 @@ def blackjack_ui():
                     if st.button("Refresh tables", key="blackjack_lan_refresh_tables", use_container_width=True):
                         _fast_rerun()
                 with create_col:
-                    if st.button("Create table", key="blackjack_lan_open_create_menu", use_container_width=True):
-                        st.session_state["blackjack_lan_create_menu_open"] = True
-                        _fast_rerun()
+                    if is_guest_multiplayer_user:
+                        st.caption("Guests cannot create tables.")
+                    else:
+                        if st.button("Create table", key="blackjack_lan_open_create_menu", use_container_width=True):
+                            st.session_state["blackjack_lan_create_menu_open"] = True
+                            _fast_rerun()
             table_search = st.text_input(
                 "Search table names",
                 key="blackjack_lan_table_search",
