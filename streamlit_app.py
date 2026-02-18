@@ -2644,7 +2644,6 @@ def computer_guesses_game_ui(account, is_guest_mode):
             _fast_rerun()
 
 
-@_fragment_or_passthrough
 def play_game_ui():
     st.subheader("Play the Number Guessing Game")
     account = st.session_state["current_account"]
@@ -3529,7 +3528,6 @@ def render_blackjack_lan_hands(table):
     )
 
 
-@_fragment_or_passthrough
 def blackjack_ui():
 
     st.subheader("Blackjack")
