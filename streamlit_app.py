@@ -4736,7 +4736,7 @@ def home_ui():
 
 def main():
     st.set_page_config(
-        page_title="gamby",
+        page_title="GAMBLY",
         page_icon="🪙",
         initial_sidebar_state="expanded",
     )
