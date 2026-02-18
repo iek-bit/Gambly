@@ -3,10 +3,14 @@
 import json
 import os
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from copy import deepcopy
 from random import shuffle
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 from money_utils import house_round_balance, house_round_credit, house_round_delta
 
@@ -40,6 +44,12 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - POSIX-only fallback
     msvcrt = None
+
+
+SUPABASE_TABLE_DEFAULT = "app_state"
+SUPABASE_STATE_ROW_ID = 1
+_in_process_write_lock = threading.RLock()
+_storage_backend_cache = None
 
 
 def _default_data():
@@ -1121,6 +1131,124 @@ def _prune_expired_sessions_unlocked(data, now_epoch, ttl_seconds):
     data["active_sessions"] = pruned_sessions
 
 
+def _load_streamlit_secret(name):
+    try:
+        import streamlit as st
+    except Exception:
+        return None
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    return str(value).strip()
+
+
+def _resolve_secret(name):
+    value = os.getenv(name)
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    return _load_streamlit_secret(name)
+
+
+def _get_storage_backend():
+    global _storage_backend_cache
+    if _storage_backend_cache is not None:
+        return _storage_backend_cache
+
+    supabase_url = _resolve_secret("SUPABASE_URL")
+    supabase_key = (
+        _resolve_secret("SUPABASE_SERVICE_ROLE_KEY")
+        or _resolve_secret("SUPABASE_KEY")
+        or _resolve_secret("SUPABASE_ANON_KEY")
+    )
+    supabase_table = _resolve_secret("SUPABASE_TABLE") or SUPABASE_TABLE_DEFAULT
+
+    if supabase_url and supabase_key:
+        _storage_backend_cache = {
+            "type": "supabase",
+            "url": supabase_url.rstrip("/"),
+            "key": supabase_key,
+            "table": supabase_table,
+        }
+    else:
+        _storage_backend_cache = {"type": "local"}
+    return _storage_backend_cache
+
+
+def _supabase_request(method, path, payload=None, extra_headers=None):
+    backend = _get_storage_backend()
+    if backend.get("type") != "supabase":
+        raise RuntimeError("Supabase request attempted without Supabase backend configuration.")
+
+    url = f"{backend['url']}{path}"
+    body = None
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+
+    headers = {
+        "apikey": backend["key"],
+        "Authorization": f"Bearer {backend['key']}",
+        "Content-Type": "application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    request = urllib_request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib_request.urlopen(request, timeout=15) as response:
+            raw = response.read()
+    except urllib_error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Supabase request failed ({exc.code}): {details}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"Supabase request failed: {exc.reason}") from exc
+
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def _read_supabase_state_unlocked():
+    backend = _get_storage_backend()
+    table = backend["table"]
+    query = urllib_parse.urlencode({"id": f"eq.{SUPABASE_STATE_ROW_ID}", "select": "data"})
+    rows = _supabase_request("GET", f"/rest/v1/{table}?{query}")
+    if not isinstance(rows, list) or not rows:
+        return None
+    row = rows[0]
+    if not isinstance(row, dict):
+        return None
+    state = row.get("data")
+    if isinstance(state, dict):
+        return state
+    return None
+
+
+def _write_supabase_state_unlocked(data):
+    backend = _get_storage_backend()
+    table = backend["table"]
+    payload = [{"id": SUPABASE_STATE_ROW_ID, "data": data}]
+    _supabase_request(
+        "POST",
+        f"/rest/v1/{table}?on_conflict=id",
+        payload=payload,
+        extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+    )
+
+
+def _read_local_data_unlocked():
+    with open(ACCOUNTS_FILE, "r") as file:
+        loaded = json.load(file)
+    if not isinstance(loaded, dict):
+        raise ValueError("JSON root must be an object.")
+    return loaded
+
+
 def _lock_file(lock_file):
     if fcntl is not None:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -1145,6 +1273,12 @@ def _unlock_file(lock_file):
 
 @contextmanager
 def _accounts_write_lock():
+    backend = _get_storage_backend()
+    if backend.get("type") == "supabase":
+        with _in_process_write_lock:
+            yield
+        return
+
     lock_path = f"{ACCOUNTS_FILE}.lock"
     lock_dir = os.path.dirname(os.path.abspath(lock_path))
     os.makedirs(lock_dir, exist_ok=True)
@@ -1163,6 +1297,11 @@ def _accounts_write_lock():
 
 
 def _write_data_unlocked(data):
+    backend = _get_storage_backend()
+    if backend.get("type") == "supabase":
+        _write_supabase_state_unlocked(data)
+        return
+
     destination = os.path.abspath(ACCOUNTS_FILE)
     destination_dir = os.path.dirname(destination) or "."
     os.makedirs(destination_dir, exist_ok=True)
@@ -1206,72 +1345,89 @@ def _account_from_raw(raw_account):
     }
 
 
-def _load_data_unlocked():
+def _normalize_loaded_data(loaded):
+    if not isinstance(loaded, dict):
+        raise ValueError("State root must be an object.")
+
+    data = _default_data()
+
+    saved_odds = loaded.get("odds", DEFAULT_ODDS)
     try:
-        with open(ACCOUNTS_FILE, "r") as file:
-            loaded = json.load(file)
-        if not isinstance(loaded, dict):
-            raise ValueError("JSON root must be an object.")
-        data = _default_data()
+        saved_odds = float(saved_odds)
+    except (TypeError, ValueError):
+        saved_odds = DEFAULT_ODDS
+    if saved_odds > 0:
+        data["odds"] = saved_odds
 
-        saved_odds = loaded.get("odds", DEFAULT_ODDS)
+    raw_accounts = loaded.get("accounts", {})
+    if isinstance(raw_accounts, dict):
+        for name, raw_account in raw_accounts.items():
+            if not isinstance(name, str):
+                continue
+            normalized_account = _account_from_raw(raw_account)
+            if normalized_account is None:
+                continue
+            data["accounts"][name] = normalized_account
+    data["active_sessions"] = _normalize_active_sessions(
+        loaded.get("active_sessions", {}),
+        set(data["accounts"].keys()),
+    )
+
+    raw_limits = loaded.get("game_limits")
+    if isinstance(raw_limits, dict):
+        limits = _default_game_limits()
         try:
-            saved_odds = float(saved_odds)
+            max_range = raw_limits.get("max_range")
+            if max_range is not None:
+                max_range = int(max_range)
+                if max_range > 0:
+                    limits["max_range"] = max_range
         except (TypeError, ValueError):
-            saved_odds = DEFAULT_ODDS
-        if saved_odds > 0:
-            data["odds"] = saved_odds
+            pass
+        try:
+            max_buy_in = raw_limits.get("max_buy_in")
+            if max_buy_in is not None:
+                max_buy_in = float(max_buy_in)
+                if max_buy_in > 0:
+                    limits["max_buy_in"] = max_buy_in
+        except (TypeError, ValueError):
+            pass
+        try:
+            max_guesses = raw_limits.get("max_guesses")
+            if max_guesses is not None:
+                max_guesses = int(max_guesses)
+                if max_guesses > 0:
+                    limits["max_guesses"] = max_guesses
+        except (TypeError, ValueError):
+            pass
+        data["game_limits"] = limits
 
-        raw_accounts = loaded.get("accounts", {})
-        if isinstance(raw_accounts, dict):
-            for name, raw_account in raw_accounts.items():
-                if not isinstance(name, str):
-                    continue
-                normalized_account = _account_from_raw(raw_account)
-                if normalized_account is None:
-                    continue
-                data["accounts"][name] = normalized_account
-        data["active_sessions"] = _normalize_active_sessions(
-            loaded.get("active_sessions", {}),
-            set(data["accounts"].keys()),
-        )
-        
-        # Load game limits if they exist in the loaded data
-        raw_limits = loaded.get("game_limits")
-        if isinstance(raw_limits, dict):
-            limits = _default_game_limits()
-            # Validate and load max_range
-            try:
-                max_range = raw_limits.get("max_range")
-                if max_range is not None:
-                    max_range = int(max_range)
-                    if max_range > 0:
-                        limits["max_range"] = max_range
-            except (TypeError, ValueError):
-                pass
-            # Validate and load max_buy_in
-            try:
-                max_buy_in = raw_limits.get("max_buy_in")
-                if max_buy_in is not None:
-                    max_buy_in = float(max_buy_in)
-                    if max_buy_in > 0:
-                        limits["max_buy_in"] = max_buy_in
-            except (TypeError, ValueError):
-                pass
-            # Validate and load max_guesses
-            try:
-                max_guesses = raw_limits.get("max_guesses")
-                if max_guesses is not None:
-                    max_guesses = int(max_guesses)
-                    if max_guesses > 0:
-                        limits["max_guesses"] = max_guesses
-            except (TypeError, ValueError):
-                pass
-            data["game_limits"] = limits
+    data["blackjack_lan"] = _normalize_blackjack_lan_state(loaded.get("blackjack_lan", {}))
+    return data
 
-        data["blackjack_lan"] = _normalize_blackjack_lan_state(loaded.get("blackjack_lan", {}))
-        
-        return data
+
+def _migrate_local_state_to_supabase_unlocked():
+    if not os.path.exists(ACCOUNTS_FILE):
+        return None
+    local_loaded = _read_local_data_unlocked()
+    normalized = _normalize_loaded_data(local_loaded)
+    _write_supabase_state_unlocked(normalized)
+    return normalized
+
+
+def _load_data_unlocked():
+    backend = _get_storage_backend()
+    try:
+        if backend.get("type") == "supabase":
+            loaded = _read_supabase_state_unlocked()
+            if loaded is None:
+                migrated = _migrate_local_state_to_supabase_unlocked()
+                if migrated is not None:
+                    return migrated
+                return None
+        else:
+            loaded = _read_local_data_unlocked()
+        return _normalize_loaded_data(loaded)
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         return None
 

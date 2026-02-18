@@ -1,9 +1,11 @@
 # Number Guessing Gambling Game
 
 ## Overview
-A Python number-guessing gambling game with persistent account data in `accounts.json`.
+A Python number-guessing gambling game with a Streamlit web UI and persistent account data.
 
-The app uses a Streamlit web app UI.
+Storage backend is selected automatically:
+- Supabase (when configured via secrets/env vars)
+- Local `accounts.json` fallback (when Supabase is not configured)
 
 ## Features
 - Create accounts with initial deposit
@@ -51,13 +53,30 @@ python main.py
 4. Select your repo, branch, and set main file path to `streamlit_app.py`.
 5. Click `Deploy`.
 
-### Important persistence note
-- This app currently stores runtime data in `accounts.json`.
-- On Streamlit Community Cloud, runtime file writes are not reliable for long-term persistence.
-- For production-like persistence, move storage to a hosted database (for example Supabase Postgres or Turso).
+### Supabase persistence setup
+1. In Supabase SQL editor, run:
+
+```sql
+create table if not exists public.app_state (
+  id bigint primary key,
+  data jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+```
+
+2. In Streamlit Community Cloud app settings, add secrets:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- Optional: `SUPABASE_TABLE` (defaults to `app_state`)
+
+3. Redeploy the app.
+
+Notes:
+- If Supabase has no row yet, the app writes/reads row id `1`.
+- If `accounts.json` exists locally and Supabase is empty, first run auto-migrates local data into Supabase.
 
 ## Account File Format
-Data is stored in `accounts.json` as structured JSON:
+App state format (used for local JSON fallback and Supabase `data` payload):
 
 ```json
 {
@@ -116,7 +135,7 @@ House edge application:
 ## Project Structure
 - `main.py`: program entrypoint and top-level menu flow orchestration
 - `streamlit_app.py`: primary Streamlit frontend
-- `storage.py`: file persistence for accounts, passwords, and odds
+- `storage.py`: persistence for accounts, passwords, odds, and blackjack state (Supabase + local fallback)
 - `auth.py`: password setup/verification and sign-in routing helpers
 - `account_ops.py`: account creation logic
 - `gameplay.py`: game logic and round loops
