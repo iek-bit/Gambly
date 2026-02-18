@@ -1652,6 +1652,7 @@ def auth_ui():
                     if reason == "in_use":
                         st.error("That account is already signed in from another session.")
                         st.session_state["pending_force_sign_in_account"] = account
+                        st.rerun()
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
@@ -1669,6 +1670,7 @@ def auth_ui():
                     if reason == "in_use":
                         st.error("That account is already signed in from another session.")
                         st.session_state["pending_force_sign_in_account"] = account
+                        st.rerun()
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
