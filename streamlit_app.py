@@ -3596,46 +3596,38 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
         seat_positions[viewer_player] = (50.0, 88.0)
         other_players = [name for name in ordered_players if name != viewer_player]
         other_count = len(other_players)
-        if other_count == 1:
-            # Keep a single opponent opposite you, but below dealer area.
-            seat_positions[other_players[0]] = (50.0, 38.0)
-        elif other_count > 1:
-            # Spread opponents across an upper-side arc while avoiding dealer overlap.
-            arc_start = 210.0
-            arc_end = 330.0
-            radius_x = 38.0
-            radius_y = 22.0
-            center_x = 50.0
-            center_y = 58.0
-            min_y = 36.0
+        if other_count > 0:
+            # Fixed seat slots around the table perimeter (excluding your bottom seat).
+            other_slots = [
+                (18.0, 74.0),  # left lower
+                (82.0, 74.0),  # right lower
+                (14.0, 58.0),  # left middle
+                (86.0, 58.0),  # right middle
+                (22.0, 42.0),  # left upper
+                (78.0, 42.0),  # right upper
+                (34.0, 34.0),  # upper-left near dealer
+                (66.0, 34.0),  # upper-right near dealer
+            ]
             for index, player_name in enumerate(other_players):
-                spread_progress = index / (other_count - 1)
-                angle_deg = arc_start + ((arc_end - arc_start) * spread_progress)
-                radians = math.radians(angle_deg)
-                x = center_x + (radius_x * math.cos(radians))
-                y = center_y + (radius_y * math.sin(radians))
-                y = max(min_y, y)
-                seat_positions[player_name] = (x, y)
+                slot_x, slot_y = other_slots[index % len(other_slots)]
+                seat_positions[player_name] = (slot_x, slot_y)
     else:
         player_count = len(ordered_players)
-        if player_count == 1:
-            seat_positions[ordered_players[0]] = (50.0, 82.0)
-        elif player_count > 1:
-            arc_start = 205.0
-            arc_end = 335.0
-            radius_x = 39.0
-            radius_y = 23.0
-            center_x = 50.0
-            center_y = 58.0
-            min_y = 35.0
+        if player_count > 0:
+            all_slots = [
+                (50.0, 88.0),  # bottom center
+                (18.0, 74.0),  # left lower
+                (82.0, 74.0),  # right lower
+                (14.0, 58.0),  # left middle
+                (86.0, 58.0),  # right middle
+                (22.0, 42.0),  # left upper
+                (78.0, 42.0),  # right upper
+                (34.0, 34.0),  # upper-left near dealer
+                (66.0, 34.0),  # upper-right near dealer
+            ]
             for index, player_name in enumerate(ordered_players):
-                spread_progress = index / (player_count - 1)
-                angle_deg = arc_start + ((arc_end - arc_start) * spread_progress)
-                radians = math.radians(angle_deg)
-                x = center_x + (radius_x * math.cos(radians))
-                y = center_y + (radius_y * math.sin(radians))
-                y = max(min_y, y)
-                seat_positions[player_name] = (x, y)
+                slot_x, slot_y = all_slots[index % len(all_slots)]
+                seat_positions[player_name] = (slot_x, slot_y)
 
     player_blocks = []
     for player_name in ordered_players:
