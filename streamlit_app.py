@@ -3848,6 +3848,8 @@ def _ensure_poker_shared_styles():
             padding: 0.55rem;
             background: radial-gradient(ellipse at center, rgba(30, 105, 86, 0.74) 0%, rgba(13, 58, 47, 0.88) 64%, rgba(7, 36, 30, 0.92) 100%);
             border: 1px solid rgba(189, 234, 220, 0.2);
+            position: relative;
+            min-height: 550px;
         }
         .pk-head {
             display: flex;
@@ -3873,14 +3875,17 @@ def _ensure_poker_shared_styles():
             align-items: center;
             gap: 0.26rem;
             min-height: 74px;
-            margin-bottom: 0.42rem;
+            margin-bottom: 0.22rem;
         }
         .pk-players {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 0.38rem;
+            position: relative;
+            width: 100%;
+            min-height: 440px;
         }
         .pk-seat {
+            position: absolute;
+            transform: translate(-50%, -50%);
+            width: clamp(170px, 26vw, 230px);
             border-radius: 11px;
             padding: 0.36rem 0.42rem 0.42rem 0.42rem;
             background: rgba(7, 34, 29, 0.5);
@@ -3899,7 +3904,35 @@ def _ensure_poker_shared_styles():
             font-size: 0.82rem;
             font-weight: 760;
             color: rgba(233, 252, 245, 0.96);
-            margin-bottom: 0.16rem;
+            margin-bottom: 0.08rem;
+        }
+        .pk-roles {
+            display: flex;
+            justify-content: center;
+            gap: 0.2rem;
+            margin-bottom: 0.12rem;
+        }
+        .pk-role {
+            border-radius: 999px;
+            padding: 0.05rem 0.34rem;
+            font-size: 0.62rem;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            border: 1px solid rgba(190, 229, 219, 0.45);
+            color: rgba(244, 252, 248, 0.96);
+            background: rgba(7, 39, 33, 0.65);
+        }
+        .pk-role-dealer {
+            background: rgba(52, 109, 88, 0.72);
+            border-color: rgba(188, 239, 218, 0.62);
+        }
+        .pk-role-sb {
+            background: rgba(26, 76, 110, 0.7);
+            border-color: rgba(173, 215, 241, 0.62);
+        }
+        .pk-role-bb {
+            background: rgba(99, 66, 32, 0.7);
+            border-color: rgba(247, 218, 161, 0.62);
         }
         .pk-meta {
             font-size: 0.72rem;
@@ -3952,6 +3985,31 @@ def _ensure_poker_shared_styles():
             justify-content: center;
             padding: 0.2rem 0.35rem;
         }
+        .pk-center-mark {
+            position: absolute;
+            left: 50%;
+            top: 56%;
+            transform: translate(-50%, -50%);
+            border-radius: 999px;
+            padding: 0.18rem 0.52rem;
+            font-size: 0.66rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            color: rgba(232, 251, 244, 0.84);
+            border: 1px dashed rgba(197, 236, 223, 0.44);
+            background: rgba(8, 43, 35, 0.52);
+        }
+        @media (max-width: 980px) {
+            .pk-felt {
+                min-height: 620px;
+            }
+            .pk-players {
+                min-height: 500px;
+            }
+            .pk-seat {
+                width: clamp(150px, 39vw, 205px);
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -3980,6 +4038,16 @@ def _poker_render_cards_html(cards):
         color = " pk-card-red" if ("♥" in text or "♦" in text) else ""
         chunks.append(f"<div class='pk-card{color}'>{text}</div>")
     return "".join(chunks)
+
+
+def _poker_display_player_name(name):
+    text = str(name or "").strip()
+    if text.startswith("bot_"):
+        parts = text.split("_")
+        if len(parts) >= 3 and parts[-1].isdigit():
+            return f"Bot {parts[-1]}"
+        return "Bot"
+    return text
 
 
 def render_poker_table_view(public_state, viewer_name):
@@ -4014,8 +4082,27 @@ def render_poker_table_view(public_state, viewer_name):
     if isinstance(cached_payload, dict) and cached_payload.get("signature") == view_signature:
         st.markdown(cached_payload.get("html", ""), unsafe_allow_html=True)
         return
+    players = list(public_state.get("players", []))
+    player_names = [str(player.get("name", "")) for player in players]
+    anchor_name = viewer_name if viewer_name in player_names else (player_names[0] if player_names else "")
+    if anchor_name and anchor_name in player_names:
+        anchor_index = player_names.index(anchor_name)
+        ordered_players = players[anchor_index:] + players[:anchor_index]
+    else:
+        ordered_players = players
+    seat_slots = [
+        (50.0, 84.0),
+        (21.0, 72.0),
+        (79.0, 72.0),
+        (13.0, 50.0),
+        (87.0, 50.0),
+        (50.0, 24.0),
+    ]
+    dealer_index = int(public_state.get("dealer_index", 0) or 0)
+    sb_index = (dealer_index + 1) % len(players) if players else -1
+    bb_index = (sb_index + 1) % len(players) if players else -1
     players_html = []
-    for player in public_state.get("players", []):
+    for seat_index, player in enumerate(ordered_players):
         classes = ["pk-seat"]
         if player.get("name") == acting:
             classes.append("pk-seat-turn")
@@ -4026,22 +4113,32 @@ def render_poker_table_view(public_state, viewer_name):
             state_bits.append("FOLDED")
         if player.get("all_in"):
             state_bits.append("ALL-IN")
-        meta = (
-            f"Stack ${format_money(player.get('stack', 0.0))} • "
-            f"Committed ${format_money(player.get('committed_total', 0.0))}"
-        )
+        meta = f"Stack ${format_money(player.get('stack', 0.0))}"
         if state_bits:
             meta = f"{meta} • {'/'.join(state_bits)}"
+        absolute_index = players.index(player) if player in players else seat_index
+        role_badges = []
+        if absolute_index == dealer_index:
+            role_badges.append("<span class='pk-role pk-role-dealer'>D</span>")
+        if absolute_index == sb_index:
+            role_badges.append("<span class='pk-role pk-role-sb'>SB</span>")
+        if absolute_index == bb_index:
+            role_badges.append("<span class='pk-role pk-role-bb'>BB</span>")
+        role_html = f"<div class='pk-roles'>{''.join(role_badges)}</div>" if role_badges else ""
+        seat_x, seat_y = seat_slots[seat_index % len(seat_slots)]
         players_html.append(
             "<div class='"
             + " ".join(classes)
-            + "'>"
-            + f"<div class='pk-name'>{player.get('name')}</div>"
+            + f"' style='left:{seat_x:.2f}%; top:{seat_y:.2f}%;'>"
+            + f"<div class='pk-name'>{_poker_display_player_name(player.get('name'))}</div>"
+            + role_html
             + f"<div class='pk-meta'>{meta}</div>"
             + f"<div class='pk-cards'>{_poker_render_cards_html(player.get('hole', []))}</div>"
             + "</div>"
         )
-    players_block = "".join(players_html) if players_html else "<div class='pk-empty'>No players</div>"
+    players_block = "".join(players_html) if players_html else (
+        "<div class='pk-seat' style='left:50%; top:58%;'><div class='pk-empty'>No players</div></div>"
+    )
     html = (
         "<div class='pk-table-wrap'><div class='pk-felt'>"
         + "<div class='pk-head'>"
@@ -4051,6 +4148,7 @@ def render_poker_table_view(public_state, viewer_name):
         + f"<span class='pk-pill'>Turn: {acting or '-'}</span>"
         + "</div>"
         + f"<div class='pk-board'>{board_html}</div>"
+        + f"<div class='pk-center-mark'>POT ${format_money(pot)}</div>"
         + f"<div class='pk-players'>{players_block}</div>"
         + "</div></div>"
     )
@@ -4300,6 +4398,15 @@ def render_poker_multiplayer(account):
             with st.form("poker_create_form"):
                 name = st.text_input("Table name", value="")
                 max_players = st.number_input("Max players", min_value=2, max_value=6, value=int(settings.get("default_max_players", 6)))
+                max_bots_for_table = min(3, max(0, int(max_players) - 1))
+                bot_count = st.number_input(
+                    "Number of bots",
+                    min_value=0,
+                    max_value=int(max_bots_for_table),
+                    value=0,
+                    step=1,
+                    help="Bots count toward max players and act automatically during hands.",
+                )
                 min_buy_in = st.number_input("Min buy-in ($)", min_value=1.0, value=float(settings.get("default_min_buy_in", 40.0)), format="%.2f")
                 max_buy_in = st.number_input("Max buy-in ($)", min_value=float(min_buy_in), value=float(settings.get("default_max_buy_in", 400.0)), format="%.2f")
                 small_blind = st.number_input("Small blind ($)", min_value=0.01, value=float(settings.get("default_small_blind", 1.0)), format="%.2f")
@@ -4323,6 +4430,7 @@ def render_poker_multiplayer(account):
                     small_blind=small_blind,
                     big_blind=big_blind,
                     min_raise=min_raise,
+                    bot_count=int(bot_count),
                     is_private=is_private,
                     password=password,
                 )
@@ -4364,6 +4472,7 @@ def render_poker_multiplayer(account):
             )
             st.markdown(
                 f"{len(table.get('players', []))}/{int(table.get('max_players', 6))} players | "
+                f"Bots {int(table.get('bot_count', 0))} | "
                 f"Blinds ${format_money(table.get('small_blind', 1.0))}/${format_money(table.get('big_blind', 2.0))} | "
                 f"Min raise ${format_money(table.get('min_raise', 0.01))}"
             )
@@ -4472,7 +4581,7 @@ def render_poker_multiplayer(account):
         for name, player_state in table_to_view.get("player_states", {}).items():
             stack = float(player_state.get("stack_cents", 0)) / 100.0
             ready = "Ready" if bool(player_state.get("ready", False)) else "Waiting"
-            st.write(f"- {name}: ${format_money(stack)} | {ready}")
+            st.write(f"- {_poker_display_player_name(name)}: ${format_money(stack)} | {ready}")
         st.markdown("---")
         if st.button("Refresh table", key=f"poker_lan_refresh_table_waiting_{table_id}", use_container_width=True):
             _invalidate_poker_lan_ui_caches()

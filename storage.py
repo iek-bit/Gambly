@@ -10,6 +10,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from money_utils import house_round_balance, house_round_credit, house_round_delta
+from poker_bots import choose_bot_action
 from poker_engine import apply_action as poker_apply_action
 from poker_engine import create_hand as poker_create_hand
 from poker_engine import legal_actions as poker_legal_actions
@@ -892,6 +893,7 @@ POKER_LAN_DEFAULT_MAX_BUY_IN = 400.0
 POKER_LAN_DEFAULT_SMALL_BLIND = 1.0
 POKER_LAN_DEFAULT_BIG_BLIND = 2.0
 POKER_LAN_DEFAULT_MIN_RAISE = 0.01
+POKER_LAN_MAX_BOTS_PER_TABLE = 3
 POKER_LAN_DEFAULT_TURN_TIMEOUT_SECONDS = 30
 POKER_LAN_PHASE_WAITING = "waiting_ready"
 POKER_LAN_PHASE_IN_HAND = "in_hand"
@@ -977,6 +979,25 @@ def _normalize_poker_lan_table_name(name, fallback_id):
     return name.strip()[:60]
 
 
+def _poker_bot_name(table_id, bot_index):
+    return f"bot_{int(table_id)}_{int(bot_index)}"
+
+
+def _poker_is_bot_name(player_name):
+    text = str(player_name or "").strip().lower()
+    return text.startswith("bot_")
+
+
+def _poker_table_human_players(table):
+    humans = []
+    for name in table.get("players", []):
+        text = str(name).strip()
+        if not text or _poker_is_bot_name(text):
+            continue
+        humans.append(text)
+    return humans
+
+
 def _default_poker_lan_table(table_id, settings=None):
     normalized_settings = _normalize_poker_lan_settings(settings or {})
     return {
@@ -985,6 +1006,7 @@ def _default_poker_lan_table(table_id, settings=None):
         "host": None,
         "players": [],
         "pending_players": [],
+        "bot_count": 0,
         "player_states": {},
         "max_players": int(normalized_settings["default_max_players"]),
         "min_buy_in": float(normalized_settings["default_min_buy_in"]),
@@ -1048,6 +1070,11 @@ def _normalize_poker_lan_table(raw_table, fallback_id, settings=None):
         table["max_players"] = max(2, min(6, int(raw_table.get("max_players", table["max_players"]))))
     except (TypeError, ValueError):
         pass
+    try:
+        max_bots = min(POKER_LAN_MAX_BOTS_PER_TABLE, max(0, int(table["max_players"]) - 1))
+        table["bot_count"] = max(0, min(max_bots, int(raw_table.get("bot_count", table.get("bot_count", 0)))))
+    except (TypeError, ValueError):
+        table["bot_count"] = 0
     table["min_buy_in"] = _coerce_poker_currency(raw_table.get("min_buy_in", table["min_buy_in"]), table["min_buy_in"])
     table["max_buy_in"] = _coerce_poker_currency(raw_table.get("max_buy_in", table["max_buy_in"]), table["max_buy_in"])
     if table["max_buy_in"] < table["min_buy_in"]:
@@ -1115,9 +1142,16 @@ def _normalize_poker_lan_table(raw_table, fallback_id, settings=None):
     for player_name in table["players"]:
         normalized_states.setdefault(player_name, _normalize_poker_player_state({}))
     table["player_states"] = normalized_states
+    for player_name in table["players"]:
+        if _poker_is_bot_name(player_name):
+            table["player_states"][player_name]["ready"] = True
+    actual_bot_count = sum(1 for name in table.get("players", []) if _poker_is_bot_name(name))
+    max_bots = min(POKER_LAN_MAX_BOTS_PER_TABLE, max(0, int(table.get("max_players", 6)) - 1))
+    table["bot_count"] = max(0, min(max_bots, actual_bot_count))
 
-    if table["host"] not in table["players"]:
-        table["host"] = table["players"][0] if table["players"] else None
+    if table["host"] not in table["players"] or _poker_is_bot_name(table["host"]):
+        humans = _poker_table_human_players(table)
+        table["host"] = humans[0] if humans else None
 
     return table
 
@@ -1220,6 +1254,32 @@ def _poker_finalize_finished_hand_unlocked(data, table):
             account["stats"] = stats
     table["phase"] = POKER_LAN_PHASE_FINISHED
     table["in_progress"] = False
+
+
+def _poker_run_bot_actions_unlocked(table):
+    hand_state = table.get("hand_state")
+    if not isinstance(hand_state, dict):
+        return
+    while hand_state.get("street") != "finished":
+        acting_index = hand_state.get("acting_index")
+        if not isinstance(acting_index, int):
+            break
+        players = hand_state.get("players", [])
+        if acting_index < 0 or acting_index >= len(players):
+            break
+        acting_player = str(players[acting_index].get("name", "")).strip()
+        if not acting_player or (not _poker_is_bot_name(acting_player)):
+            break
+        legal = poker_legal_actions(hand_state, acting_player)
+        actions = legal.get("actions", [])
+        if not actions:
+            break
+        action, amount = choose_bot_action(hand_state, acting_player, legal)
+        ok, _message = poker_apply_action(hand_state, acting_player, action, amount)
+        if not ok:
+            poker_apply_action(hand_state, acting_player, "fold")
+        _poker_lan_append_history(table, f"{acting_player}: {str(action).lower()}")
+    table["hand_state"] = hand_state
 
 
 def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, allow_in_hand=False):
@@ -1340,6 +1400,7 @@ def create_poker_lan_table(
     password=None,
     table_name=None,
     turn_timeout_seconds=None,
+    bot_count=0,
 ):
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
@@ -1376,6 +1437,12 @@ def create_poker_lan_table(
             table["name"] = _normalize_poker_lan_table_name(table_name, table_id)
         if turn_timeout_seconds is not None:
             table["turn_timeout_seconds"] = _coerce_poker_turn_timeout(turn_timeout_seconds, table["turn_timeout_seconds"])
+        try:
+            max_bots = min(POKER_LAN_MAX_BOTS_PER_TABLE, max(0, int(table["max_players"]) - 1))
+            normalized_bot_count = max(0, min(max_bots, int(bot_count)))
+        except (TypeError, ValueError):
+            normalized_bot_count = 0
+        table["bot_count"] = normalized_bot_count
         if bool(table.get("is_private")) and (not str(table.get("password", "")).strip()):
             return False, "Private tables must have a password."
         if bool(table.get("spectators_require_password")) and (not str(table.get("password", "")).strip()):
@@ -1385,6 +1452,14 @@ def create_poker_lan_table(
         for existing in lane:
             if _normalize_poker_lan_table_name(existing.get("name"), existing.get("id")) == table["name"]:
                 return False, "A table with that name already exists."
+        for bot_index in range(1, int(table.get("bot_count", 0)) + 1):
+            bot_name = _poker_bot_name(table_id, bot_index)
+            table.setdefault("players", []).append(bot_name)
+            table.setdefault("player_states", {})[bot_name] = _normalize_poker_player_state(
+                {"stack_cents": int(round(float(table.get("min_buy_in", 0.0)) * 100)), "ready": True}
+            )
+            _poker_lan_append_history(table, f"{bot_name} joined the table.")
+        table["phase"] = POKER_LAN_PHASE_WAITING
         lane.append(table)
         lan_state["tables"] = sorted(lane, key=lambda item: int(item.get("id", 0)))
         data["poker_lan"] = lan_state
@@ -1401,7 +1476,8 @@ def delete_poker_lan_table(table_id):
             return False, "Table not found."
         if bool(table.get("in_progress")):
             return False, "Cannot delete a table during an active hand."
-        if table.get("players") or table.get("pending_players"):
+        human_players = [name for name in table.get("players", []) if not _poker_is_bot_name(name)]
+        if human_players or table.get("pending_players"):
             return False, "Cannot delete table while players are seated or queued."
         lan_state["tables"] = [entry for entry in lan_state.get("tables", []) if int(entry.get("id", -1)) != int(table_id)]
         data["poker_lan"] = lan_state
@@ -1554,7 +1630,7 @@ def join_poker_lan_table(table_id, player_name, password="", buy_in=None):
         destination.setdefault("player_states", {})[normalized_player] = _normalize_poker_player_state(
             {"stack_cents": int(round(normalized_buy_in * 100))}
         )
-        if not destination.get("host"):
+        if (not destination.get("host")) or _poker_is_bot_name(destination.get("host")):
             destination["host"] = normalized_player
         destination["phase"] = POKER_LAN_PHASE_WAITING
         destination["last_updated_epoch"] = time.time()
@@ -1631,7 +1707,10 @@ def set_poker_lan_player_ready(table_id, player_name, ready=True):
         seated_ready = [
             name
             for name in table.get("players", [])
-            if bool(table.get("player_states", {}).get(name, {}).get("ready", False))
+            if (
+                bool(table.get("player_states", {}).get(name, {}).get("ready", False))
+                or _poker_is_bot_name(name)
+            )
             and int(table.get("player_states", {}).get(name, {}).get("stack_cents", 0)) > 0
         ]
         seated_eligible = [
@@ -1667,7 +1746,10 @@ def set_poker_lan_player_ready(table_id, player_name, ready=True):
             table["dealer_index"] = (int(table.get("dealer_index", 0)) + 1) % max(1, len(seated_eligible))
             for name in table.get("players", []):
                 table.setdefault("player_states", {}).setdefault(name, _normalize_poker_player_state({}))
-                table["player_states"][name]["ready"] = False
+                table["player_states"][name]["ready"] = _poker_is_bot_name(name)
+            _poker_run_bot_actions_unlocked(table)
+            if hand_state.get("street") == "finished":
+                _poker_finalize_finished_hand_unlocked(data, table)
             _poker_lan_append_history(table, f"Round {table['round']} started.")
             data["poker_lan"] = lan_state
             _write_data_unlocked(data)
@@ -1706,6 +1788,8 @@ def poker_lan_player_action(table_id, player_name, action, amount=None):
         table["turn_started_epoch"] = time.time()
         _poker_lan_append_history(table, f"{normalized_player}: {str(action).lower()}")
 
+        _poker_run_bot_actions_unlocked(table)
+        hand_state = table.get("hand_state")
         if hand_state.get("street") == "finished":
             _poker_finalize_finished_hand_unlocked(data, table)
 
