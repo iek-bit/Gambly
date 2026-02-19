@@ -450,17 +450,22 @@ def _fast_rerun(force=False):
         rerun_func()
 
 
-def _schedule_non_blocking_rerun(interval_ms, key):
+def _schedule_non_blocking_rerun(interval_ms, key, allow_blocking_fallback=False):
     autorefresh_func = getattr(st, "autorefresh", None)
     if callable(autorefresh_func):
         try:
             autorefresh_func(interval=max(250, int(interval_ms)), key=str(key))
-            return
+            return True
         except Exception:
             pass
-    # Do not hard-reload as a fallback; full page reload can reset UI state
-    # and kick users back to Home in some environments.
-    return
+    # Fallback for environments without st.autorefresh: do a short sleep then
+    # fragment rerun so timers still visibly count down.
+    if allow_blocking_fallback:
+        sleep_seconds = max(0.25, min(1.2, float(interval_ms) / 1000.0))
+        time.sleep(sleep_seconds)
+        _fast_rerun()
+        return True
+    return False
 
 
 def _adaptive_refresh_interval_ms(
@@ -3634,28 +3639,8 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
     if timer_seconds is not None:
         timer_value = max(0, int(timer_seconds))
         timer_class = "bj-lan-timer bj-lan-timer-danger" if timer_value <= 10 else "bj-lan-timer"
-        timer_elem_id = f"bj-lan-timer-{int(table.get('id', 0))}"
         timer_html = (
-            f'<div id="{timer_elem_id}" class="{timer_class}" data-start-seconds="{timer_value}">TIME: {timer_value}s</div>'
-            "<script>"
-            "(function(){"
-            f"const el=document.getElementById('{timer_elem_id}');"
-            "if(!el){return;}"
-            "const startVal=parseInt(el.getAttribute('data-start-seconds')||'0',10);"
-            "const started=Date.now();"
-            "if(el.__bjTimerInterval){clearInterval(el.__bjTimerInterval);}"
-            "const tick=function(){"
-            "const elapsed=Math.floor((Date.now()-started)/1000);"
-            "const remaining=Math.max(0,startVal-elapsed);"
-            "el.textContent='TIME: '+remaining+'s';"
-            "if(remaining<=10){el.classList.add('bj-lan-timer-danger');}"
-            "else{el.classList.remove('bj-lan-timer-danger');}"
-            "if(remaining<=0){clearInterval(el.__bjTimerInterval);el.__bjTimerInterval=null;}"
-            "};"
-            "tick();"
-            "el.__bjTimerInterval=setInterval(tick,250);"
-            "})();"
-            "</script>"
+            f'<div class="{timer_class}">TIME: {timer_value}s</div>'
         )
 
     table_html = (
@@ -4179,6 +4164,7 @@ def blackjack_ui():
             _schedule_non_blocking_rerun(
                 list_interval_ms,
                 key="blackjack_lan_tables_list_autorefresh",
+                allow_blocking_fallback=True,
             )
             return
 
@@ -4400,6 +4386,7 @@ def blackjack_ui():
             _schedule_non_blocking_rerun(
                 interval_ms,
                 key=f"blackjack_lan_timer_autorefresh_{table_id}",
+                allow_blocking_fallback=True,
             )
         elif table_to_view.get("phase") == "player_turns" and bool(table_to_view.get("in_progress")):
             interval_ms = _adaptive_refresh_interval_ms(
@@ -4414,6 +4401,7 @@ def blackjack_ui():
             _schedule_non_blocking_rerun(
                 interval_ms,
                 key=f"blackjack_lan_turns_autorefresh_{table_id}",
+                allow_blocking_fallback=True,
             )
         elif table_to_view.get("phase") in {"waiting_for_bets", "waiting_for_players"}:
             interval_ms = _adaptive_refresh_interval_ms(
@@ -4428,6 +4416,7 @@ def blackjack_ui():
             _schedule_non_blocking_rerun(
                 interval_ms,
                 key=f"blackjack_lan_lobby_autorefresh_{table_id}",
+                allow_blocking_fallback=True,
             )
         elif table_to_view.get("phase") == "finished":
             interval_ms = _adaptive_refresh_interval_ms(
@@ -4442,6 +4431,7 @@ def blackjack_ui():
             _schedule_non_blocking_rerun(
                 interval_ms,
                 key=f"blackjack_lan_finished_autorefresh_{table_id}",
+                allow_blocking_fallback=True,
             )
         return
 
