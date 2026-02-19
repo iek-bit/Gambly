@@ -4421,6 +4421,10 @@ def blackjack_ui():
                             _fast_rerun()
                         else:
                             st.error(message)
+                    st.markdown("---")
+                    if st.button("Refresh table", key="blackjack_lan_refresh_table_create", use_container_width=True):
+                        _invalidate_blackjack_lan_ui_caches()
+                        _fast_rerun()
                     return
 
                 refresh_col, _spacer, create_col = st.columns([1.4, 3.4, 1.8])
@@ -4592,6 +4596,10 @@ def blackjack_ui():
                 key="blackjack_lan_tables_list_autorefresh",
                 allow_blocking_fallback=False,
             )
+            st.markdown("---")
+            if st.button("Refresh table", key="blackjack_lan_refresh_table_lobby", use_container_width=True):
+                _invalidate_blackjack_lan_ui_caches()
+                _fast_rerun()
             return
 
         table_to_view = joined_table if joined_table is not None else spectate_table
@@ -4887,6 +4895,10 @@ def blackjack_ui():
                 key=f"blackjack_lan_finished_autorefresh_{table_id}",
                 allow_blocking_fallback=False,
             )
+        st.markdown("---")
+        if st.button("Refresh table", key=f"blackjack_lan_refresh_table_bottom_{table_id}", use_container_width=True):
+            _invalidate_blackjack_lan_ui_caches()
+            _fast_rerun()
         return
 
 
@@ -5327,6 +5339,9 @@ def render_poker_multiplayer(account):
                 else:
                     st.error(message)
                 _fast_rerun(force=True)
+        st.markdown("---")
+        if st.button("Refresh table", key="poker_lan_refresh_table_lobby", use_container_width=True):
+            _fast_rerun(force=True)
         return
 
     table_to_view = joined_table
@@ -5380,6 +5395,9 @@ def render_poker_multiplayer(account):
             stack = float(player_state.get("stack_cents", 0)) / 100.0
             ready = "Ready" if bool(player_state.get("ready", False)) else "Waiting"
             st.write(f"- {name}: ${format_money(stack)} | {ready}")
+        st.markdown("---")
+        if st.button("Refresh table", key=f"poker_lan_refresh_table_waiting_{table_id}", use_container_width=True):
+            _fast_rerun(force=True)
         return
 
     hand_state = table_to_view.get("hand_state")
@@ -5446,6 +5464,9 @@ def render_poker_multiplayer(account):
         ramp_limit=8,
     )
     _schedule_non_blocking_rerun(interval_ms, key=f"poker_lan_autorefresh_{table_id}", allow_blocking_fallback=False)
+    st.markdown("---")
+    if st.button("Refresh table", key=f"poker_lan_refresh_table_bottom_{table_id}", use_container_width=True):
+        _fast_rerun(force=True)
 
 
 def poker_ui():
