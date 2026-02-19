@@ -1642,17 +1642,17 @@ def render_top_controls():
                     st.session_state["auth_flow_mode"] = None
                     st.session_state["pending_new_account"] = None
                     st.session_state["active_action"] = "Change profile picture"
-                    _fast_rerun()
+                    _fast_rerun(force=True)
                 if st.button("Change password", key="profile_change_password", use_container_width=True):
                     st.session_state["show_auth_flow"] = False
                     st.session_state["auth_flow_mode"] = None
                     st.session_state["pending_new_account"] = None
                     st.session_state["active_action"] = "Change password"
-                    _fast_rerun()
+                    _fast_rerun(force=True)
                 if st.button("Sign out", key="profile_sign_out", use_container_width=True):
                     _sign_out_current_account()
                     st.success("Signed out.")
-                    _fast_rerun()
+                    _fast_rerun(force=True)
     elif not current_account:
         if active_action == "Home" and not show_auth_flow:
             sign_in_col, _spacer = st.columns([1.22, 4.97])
@@ -1667,7 +1667,7 @@ def render_top_controls():
                     st.session_state["show_auth_flow"] = True
                     st.session_state["auth_flow_mode"] = None
                     st.session_state["pending_new_account"] = None
-                    _fast_rerun()
+                    _fast_rerun(force=True)
 
 
 def is_guessing_in_progress():
@@ -1842,7 +1842,7 @@ def render_back_button():
         st.session_state["pending_new_account"] = None
         st.session_state["active_action"] = "Home"
         end_guest_session(set_completion_message=True)
-        _fast_rerun()
+        _fast_rerun(force=True)
 
 
 def _complete_auth_success(account, message):
@@ -5164,7 +5164,7 @@ def home_ui():
             st.session_state["blackjack_guest_mode_setup"] = False
         if reset_selected_mode:
             st.session_state["selected_game_mode"] = None
-        _fast_rerun()
+        _fast_rerun(force=True)
 
     def _home_action_button(
         label,
