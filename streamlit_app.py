@@ -5,6 +5,7 @@ import uuid
 import time
 import math
 import re
+import json
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -466,6 +467,46 @@ def _schedule_non_blocking_rerun(interval_ms, key, allow_blocking_fallback=False
         _fast_rerun()
         return True
     return False
+
+
+@st.cache_data(ttl=1.5, show_spinner=False)
+def _cached_blackjack_lan_settings():
+    return get_blackjack_lan_settings()
+
+
+@st.cache_data(ttl=0.9, show_spinner=False)
+def _cached_blackjack_lan_tables():
+    return get_blackjack_lan_tables()
+
+
+@st.cache_data(ttl=0.9, show_spinner=False)
+def _cached_find_blackjack_lan_table_for_player(player_name):
+    return find_blackjack_lan_table_for_player(player_name)
+
+
+@st.cache_data(ttl=0.8, show_spinner=False)
+def _cached_get_account_value(account_name):
+    return get_account_value(account_name)
+
+
+def _invalidate_blackjack_lan_ui_caches():
+    for cached_func in (
+        _cached_blackjack_lan_settings,
+        _cached_blackjack_lan_tables,
+        _cached_find_blackjack_lan_table_for_player,
+        _cached_get_account_value,
+    ):
+        try:
+            cached_func.clear()
+        except Exception:
+            pass
+
+
+def _toggle_or_checkbox(label, *, value=False, key=None, help=None):
+    toggle_func = getattr(st, "toggle", None)
+    if callable(toggle_func):
+        return bool(toggle_func(label, value=bool(value), key=key, help=help))
+    return bool(st.checkbox(label, value=bool(value), key=key, help=help))
 
 
 def _adaptive_refresh_interval_ms(
@@ -1342,6 +1383,7 @@ def _auto_remove_lan_player_when_not_in_blackjack():
     if joined_table is None:
         return
     auto_remove_blackjack_lan_player(active_player)
+    _invalidate_blackjack_lan_ui_caches()
 
 
 def _clear_blackjack_multiplayer_guest_account(delete_record=True):
@@ -1364,6 +1406,7 @@ def _clear_blackjack_multiplayer_guest_account(delete_record=True):
             pass
     st.session_state["blackjack_multiplayer_guest_account"] = None
     st.session_state["blackjack_multiplayer_guest_setup"] = False
+    _invalidate_blackjack_lan_ui_caches()
 
 
 def current_balance():
@@ -1441,6 +1484,64 @@ def show_win_confetti():
             height=0,
             width=0,
         )
+
+
+def render_blackjack_lan_timer_client_sync(timer_element_id, start_seconds):
+    components.html(
+        f"""
+        <script>
+        (function() {{
+          const timerId = {json.dumps(str(timer_element_id))};
+          const startVal = Math.max(0, parseInt({int(start_seconds)}, 10) || 0);
+          const rootWindow = window.parent || window;
+          const doc = rootWindow.document || document;
+          const el = doc.getElementById(timerId);
+          if (!el) {{
+            return;
+          }}
+          const intervalsKey = "__bjLanTimerIntervals";
+          if (!rootWindow[intervalsKey]) {{
+            rootWindow[intervalsKey] = {{}};
+          }}
+          const existing = rootWindow[intervalsKey][timerId];
+          if (existing) {{
+            clearInterval(existing);
+          }}
+          const startedAt = Date.now();
+          const tick = function() {{
+            const node = doc.getElementById(timerId);
+            if (!node) {{
+              const stale = rootWindow[intervalsKey][timerId];
+              if (stale) {{
+                clearInterval(stale);
+                delete rootWindow[intervalsKey][timerId];
+              }}
+              return;
+            }}
+            const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+            const remaining = Math.max(0, startVal - elapsed);
+            node.textContent = "TIME: " + remaining + "s";
+            if (remaining <= 10) {{
+              node.classList.add("bj-lan-timer-danger");
+            }} else {{
+              node.classList.remove("bj-lan-timer-danger");
+            }}
+            if (remaining <= 0) {{
+              const done = rootWindow[intervalsKey][timerId];
+              if (done) {{
+                clearInterval(done);
+                delete rootWindow[intervalsKey][timerId];
+              }}
+            }}
+          }};
+          tick();
+          rootWindow[intervalsKey][timerId] = setInterval(tick, 250);
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def is_admin_user():
@@ -3533,6 +3634,27 @@ def blackjack_lan_ready_counts(table):
     return ready, len(players)
 
 
+def blackjack_lan_find_player_table_from_tables(tables, player_name):
+    if not isinstance(player_name, str) or not player_name:
+        return None
+    if not isinstance(tables, list):
+        return None
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        players = table.get("players", [])
+        pending_players = table.get("pending_players", [])
+        if player_name in players:
+            enriched = dict(table)
+            enriched["membership"] = "seated"
+            return enriched
+        if player_name in pending_players:
+            enriched = dict(table)
+            enriched["membership"] = "pending"
+            return enriched
+    return None
+
+
 def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, timer_seconds=None):
     _ensure_blackjack_shared_styles()
     dealer_cards = table.get("dealer_cards", [])
@@ -3636,11 +3758,14 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
     )
 
     timer_html = ""
+    timer_element_id = None
+    timer_value = None
     if timer_seconds is not None:
         timer_value = max(0, int(timer_seconds))
         timer_class = "bj-lan-timer bj-lan-timer-danger" if timer_value <= 10 else "bj-lan-timer"
+        timer_element_id = f"bj-lan-timer-{int(table.get('id', 0))}"
         timer_html = (
-            f'<div class="{timer_class}">TIME: {timer_value}s</div>'
+            f'<div id="{timer_element_id}" class="{timer_class}">TIME: {timer_value}s</div>'
         )
 
     table_html = (
@@ -3659,6 +3784,8 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
         + "</div>"
     )
     st.markdown(table_html, unsafe_allow_html=True)
+    if timer_element_id is not None and timer_value is not None:
+        render_blackjack_lan_timer_client_sync(timer_element_id, timer_value)
 
 
 def blackjack_ui():
@@ -3673,6 +3800,9 @@ def blackjack_ui():
     if mode == "Remote Multiplayer (LAN)":
         mode = "Multiplayer"
         st.session_state["blackjack_mode_select"] = mode
+    if mode == "Hotseat Multiplayer":
+        mode = "Single Player"
+        st.session_state["blackjack_mode_select"] = mode
     guest_multiplayer_account = st.session_state.get("blackjack_multiplayer_guest_account")
     if mode != "Multiplayer" and guest_multiplayer_account:
         _clear_blackjack_multiplayer_guest_account(delete_record=True)
@@ -3680,9 +3810,17 @@ def blackjack_ui():
     if mode != "Multiplayer":
         st.session_state["blackjack_lan_create_menu_open"] = False
     joined_lan_table = None
+    multiplayer_tables_snapshot = None
     multiplayer_player = account or guest_multiplayer_account
-    if mode == "Multiplayer" and multiplayer_player is not None:
-        joined_lan_table = find_blackjack_lan_table_for_player(multiplayer_player)
+    if mode == "Multiplayer":
+        multiplayer_tables_snapshot = _cached_blackjack_lan_tables()
+        if multiplayer_player is not None:
+            joined_lan_table = blackjack_lan_find_player_table_from_tables(
+                multiplayer_tables_snapshot,
+                multiplayer_player,
+            )
+            if joined_lan_table is None:
+                joined_lan_table = _cached_find_blackjack_lan_table_for_player(multiplayer_player)
     is_lan_table_locked = joined_lan_table is not None
     in_progress_round = st.session_state.get("blackjack_round")
     is_blackjack_round_active = (
@@ -3698,16 +3836,12 @@ def blackjack_ui():
         st.markdown("**Mode selection is locked while you are seated at a multiplayer table. Leave table to switch modes.**")
     else:
         st.markdown("**Choose a mode:**")
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             if st.button("Single Player", key="mode_single_player", use_container_width=True):
                 st.session_state["blackjack_mode_select"] = "Single Player"
                 _fast_rerun()
         with col2:
-            if st.button("Hotseat Multiplayer", key="mode_hotseat", use_container_width=True):
-                st.session_state["blackjack_mode_select"] = "Hotseat Multiplayer"
-                _fast_rerun()
-        with col3:
             if st.button("Multiplayer", key="mode_remote", use_container_width=True):
                 st.session_state["blackjack_mode_select"] = "Multiplayer"
                 _fast_rerun()
@@ -3769,13 +3903,6 @@ def blackjack_ui():
             st.info(f"Guest balance: ${format_money(balance)}")
         else:
             st.info(f"Current balance: ${format_money(balance)}")
-    elif mode == "Hotseat Multiplayer":
-        if account is None:
-            st.warning("You must be signed in to use hotseat multiplayer.")
-            return
-        st.info("Hotseat multiplayer mode coming soon!")
-        return
-
     elif mode == "Multiplayer":
         st.markdown("### Multiplayer Tables")
         if multiplayer_player is None:
@@ -3837,13 +3964,17 @@ def blackjack_ui():
                     st.error("Your guest multiplayer session expired. Start a new guest session.")
                 return
 
-        lan_settings = get_blackjack_lan_settings()
+        lan_settings = _cached_blackjack_lan_settings()
         if get_storage_backend_type() != "supabase":
             st.warning(
                 "Multiplayer is using local storage on this app instance. "
                 "Real-time play only syncs for users connected to this same running host."
             )
-        tables = get_blackjack_lan_tables()
+        tables = (
+            multiplayer_tables_snapshot
+            if isinstance(multiplayer_tables_snapshot, list)
+            else _cached_blackjack_lan_tables()
+        )
         joined_table = joined_lan_table
         spectate_table = None
         spectate_table_id = st.session_state.get("blackjack_lan_spectate_table_id")
@@ -3993,6 +4124,7 @@ def blackjack_ui():
                             disable_turn_timeout=bool(create_no_timer),
                         )
                         if ok:
+                            _invalidate_blackjack_lan_ui_caches()
                             st.session_state["blackjack_lan_create_menu_open"] = False
                             st.session_state["blackjack_lan_create_notice"] = message
                             _fast_rerun()
@@ -4003,6 +4135,7 @@ def blackjack_ui():
                 refresh_col, _spacer, create_col = st.columns([1.4, 3.4, 1.8])
                 with refresh_col:
                     if st.button("Refresh tables", key="blackjack_lan_refresh_tables", use_container_width=True):
+                        _invalidate_blackjack_lan_ui_caches()
                         _fast_rerun()
                 with create_col:
                     if is_guest_multiplayer_user:
@@ -4105,6 +4238,7 @@ def blackjack_ui():
                         disabled=is_full,
                     ):
                         joined, message = join_blackjack_lan_table(table_id, account, table_password)
+                        _invalidate_blackjack_lan_ui_caches()
                         if joined:
                             st.session_state["blackjack_lan_spectate_table_id"] = None
                             st.session_state["blackjack_lan_spectate_password"] = ""
@@ -4135,6 +4269,7 @@ def blackjack_ui():
                             use_container_width=True,
                         ):
                             deleted, message = delete_blackjack_lan_table(table_id)
+                            _invalidate_blackjack_lan_ui_caches()
                             if deleted:
                                 st.success(message)
                             else:
@@ -4155,16 +4290,16 @@ def blackjack_ui():
             list_interval_ms = _adaptive_refresh_interval_ms(
                 state_key="blackjack_lan_tables_list_sync_state",
                 signature=list_signature,
-                base_ms=900,
-                min_ms=450,
-                max_ms=2200,
-                ramp_step_ms=170,
+                base_ms=1500,
+                min_ms=1000,
+                max_ms=3000,
+                ramp_step_ms=220,
                 ramp_limit=9,
             )
             _schedule_non_blocking_rerun(
                 list_interval_ms,
                 key="blackjack_lan_tables_list_autorefresh",
-                allow_blocking_fallback=True,
+                allow_blocking_fallback=False,
             )
             return
 
@@ -4190,6 +4325,7 @@ def blackjack_ui():
 
             if st.button("Leave table", key=f"blackjack_lan_leave_{table_id}", use_container_width=True):
                 left, message = leave_blackjack_lan_table(table_id, account)
+                _invalidate_blackjack_lan_ui_caches()
                 if left:
                     st.success(message)
                 else:
@@ -4202,7 +4338,7 @@ def blackjack_ui():
         pending_players = table_to_view.get("pending_players", [])
         guest_alias_map = blackjack_ui_guest_alias_map(table_to_view)
         current_turn_player = blackjack_lan_current_turn_player(table_to_view)
-        current_balance = get_account_value(account)
+        current_balance = _cached_get_account_value(account)
         seconds_left = blackjack_lan_seconds_remaining(table_to_view, lan_settings)
         table_turn_timeout = table_to_view.get("turn_timeout_seconds", lan_settings.get("turn_timeout_seconds", 30))
         timer_text = f"{seconds_left}s" if seconds_left is not None else ("No timer" if table_turn_timeout is None else "-")
@@ -4266,6 +4402,7 @@ def blackjack_ui():
                             st.error(error)
                     return
                 placed, message = set_blackjack_lan_player_bet(table_id, account, normalized_bet)
+                _invalidate_blackjack_lan_ui_caches()
                 if placed:
                     st.success(message)
                 else:
@@ -4283,6 +4420,7 @@ def blackjack_ui():
                         account,
                         ready=(not is_ready),
                     )
+                    _invalidate_blackjack_lan_ui_caches()
                     if changed:
                         st.success(message)
                     else:
@@ -4312,6 +4450,7 @@ def blackjack_ui():
                         use_container_width=True,
                     ):
                         acted, message = blackjack_lan_player_action(table_id, account, "hit")
+                        _invalidate_blackjack_lan_ui_caches()
                         if acted:
                             st.success(message)
                         else:
@@ -4324,6 +4463,7 @@ def blackjack_ui():
                         use_container_width=True,
                     ):
                         acted, message = blackjack_lan_player_action(table_id, account, "stand")
+                        _invalidate_blackjack_lan_ui_caches()
                         if acted:
                             st.success(message)
                         else:
@@ -4350,13 +4490,36 @@ def blackjack_ui():
             if your_result is not None:
                 st.caption(f"Your payout: ${format_money(your_payout)}")
 
-        with st.expander("Table history"):
-            history = table_to_view.get("history", [])
-            if not history:
-                st.write("No actions yet.")
-            else:
-                for entry in history[-25:]:
-                    st.write(blackjack_ui_format_history_entry(entry, guest_alias_map))
+        show_history = _toggle_or_checkbox(
+            "Show table history",
+            value=False,
+            key=f"blackjack_lan_show_history_{table_id}",
+        )
+        if show_history:
+            with st.expander("Table history", expanded=True):
+                history = table_to_view.get("history", [])
+                history_signature = (
+                    int(table_id),
+                    int(len(history)),
+                    float(table_to_view.get("last_updated_epoch", 0.0) or 0.0),
+                )
+                history_cache_key = f"blackjack_lan_history_cache_{table_id}"
+                cached_history_block = st.session_state.get(history_cache_key, {})
+                if cached_history_block.get("signature") != history_signature:
+                    formatted_history = [
+                        blackjack_ui_format_history_entry(entry, guest_alias_map)
+                        for entry in history[-25:]
+                    ]
+                    st.session_state[history_cache_key] = {
+                        "signature": history_signature,
+                        "lines": formatted_history,
+                    }
+                history_lines = st.session_state.get(history_cache_key, {}).get("lines", [])
+                if not history_lines:
+                    st.write("No actions yet.")
+                else:
+                    for line in history_lines:
+                        st.write(line)
         table_signature = (
             int(table_id),
             float(table_to_view.get("last_updated_epoch", 0.0) or 0.0),
@@ -4377,10 +4540,10 @@ def blackjack_ui():
             interval_ms = _adaptive_refresh_interval_ms(
                 state_key=f"blackjack_lan_table_sync_state_{table_id}",
                 signature=table_signature,
-                base_ms=430,
-                min_ms=280,
-                max_ms=1400,
-                ramp_step_ms=110,
+                base_ms=1100,
+                min_ms=900,
+                max_ms=2200,
+                ramp_step_ms=140,
                 ramp_limit=7,
             )
             _schedule_non_blocking_rerun(
@@ -4392,10 +4555,10 @@ def blackjack_ui():
             interval_ms = _adaptive_refresh_interval_ms(
                 state_key=f"blackjack_lan_table_sync_state_{table_id}",
                 signature=table_signature,
-                base_ms=520,
-                min_ms=320,
-                max_ms=1500,
-                ramp_step_ms=120,
+                base_ms=1000,
+                min_ms=700,
+                max_ms=2200,
+                ramp_step_ms=140,
                 ramp_limit=7,
             )
             _schedule_non_blocking_rerun(
@@ -4407,31 +4570,31 @@ def blackjack_ui():
             interval_ms = _adaptive_refresh_interval_ms(
                 state_key=f"blackjack_lan_table_sync_state_{table_id}",
                 signature=table_signature,
-                base_ms=800,
-                min_ms=450,
-                max_ms=2300,
-                ramp_step_ms=180,
+                base_ms=1400,
+                min_ms=1000,
+                max_ms=3200,
+                ramp_step_ms=230,
                 ramp_limit=8,
             )
             _schedule_non_blocking_rerun(
                 interval_ms,
                 key=f"blackjack_lan_lobby_autorefresh_{table_id}",
-                allow_blocking_fallback=True,
+                allow_blocking_fallback=False,
             )
         elif table_to_view.get("phase") == "finished":
             interval_ms = _adaptive_refresh_interval_ms(
                 state_key=f"blackjack_lan_table_sync_state_{table_id}",
                 signature=table_signature,
-                base_ms=650,
-                min_ms=400,
-                max_ms=1800,
-                ramp_step_ms=160,
+                base_ms=1500,
+                min_ms=1100,
+                max_ms=3200,
+                ramp_step_ms=230,
                 ramp_limit=7,
             )
             _schedule_non_blocking_rerun(
                 interval_ms,
                 key=f"blackjack_lan_finished_autorefresh_{table_id}",
-                allow_blocking_fallback=True,
+                allow_blocking_fallback=False,
             )
         return
 
@@ -4705,8 +4868,8 @@ def blackjack_lan_admin_ui():
         return
 
     st.subheader("Multiplayer Blackjack Table Controls")
-    settings = get_blackjack_lan_settings()
-    tables = get_blackjack_lan_tables()
+    settings = _cached_blackjack_lan_settings()
+    tables = _cached_blackjack_lan_tables()
 
     st.markdown("#### Global Timeout / Penalty")
     with st.form("blackjack_lan_global_settings_form"):
@@ -4736,6 +4899,7 @@ def blackjack_lan_admin_ui():
             timeout_penalty,
             allow_spectators_default,
         )
+        _invalidate_blackjack_lan_ui_caches()
         if ok:
             st.success(message)
         else:
@@ -4836,6 +5000,7 @@ def blackjack_lan_admin_ui():
                 edit_private,
                 edit_password,
             )
+            _invalidate_blackjack_lan_ui_caches()
             if ok:
                 st.success(message)
             else:
@@ -4848,6 +5013,7 @@ def blackjack_lan_admin_ui():
             use_container_width=True,
         ):
             ok, message = delete_blackjack_lan_table(table_id)
+            _invalidate_blackjack_lan_ui_caches()
             if ok:
                 st.success(message)
             else:
