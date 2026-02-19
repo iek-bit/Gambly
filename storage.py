@@ -3035,24 +3035,27 @@ def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, 
 def get_poker_lan_tables():
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
         data["poker_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return deepcopy(lan_state.get("tables", []))
 
 
 def get_poker_lan_settings():
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
         data["poker_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return deepcopy(lan_state.get("settings", _default_poker_lan_settings()))
 
 
 def can_spectate_poker_lan_table(table_id, password=""):
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
         table = _poker_lan_table_by_id(lan_state, table_id)
         if table is None:
@@ -3066,7 +3069,7 @@ def can_spectate_poker_lan_table(table_id, password=""):
         if requires_password and str(table.get("password", "")) != str(password or ""):
             return False, "Incorrect table password."
         data["poker_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return True, "Spectating allowed."
 
 
@@ -3076,6 +3079,7 @@ def find_poker_lan_table_for_player(player_name):
     normalized_player = player_name.strip()
     with _accounts_write_lock():
         data = _load_data_for_write_unlocked()
+        before_data = deepcopy(data)
         lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
         for table in lan_state.get("tables", []):
             membership = _poker_lan_table_member_state(table, normalized_player)
@@ -3083,10 +3087,10 @@ def find_poker_lan_table_for_player(player_name):
                 found = deepcopy(table)
                 found["membership"] = membership
                 data["poker_lan"] = lan_state
-                _write_data_unlocked(data)
+                _persist_if_changed_unlocked(data, before_data)
                 return found
         data["poker_lan"] = lan_state
-        _write_data_unlocked(data)
+        _persist_if_changed_unlocked(data, before_data)
         return None
 
 

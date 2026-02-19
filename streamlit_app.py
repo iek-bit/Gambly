@@ -6,6 +6,7 @@ import time
 import math
 import re
 import json
+import os
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -555,6 +556,26 @@ def _schedule_non_blocking_rerun(interval_ms, key, allow_blocking_fallback=False
     return False
 
 
+def _perf_enabled():
+    return os.environ.get("GAMBLY_PERF_DEBUG", "0") == "1"
+
+
+def _perf_start(label):
+    if not _perf_enabled():
+        return None
+    return (label, time.perf_counter())
+
+
+def _perf_end(token):
+    if token is None:
+        return
+    label, started = token
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    perf_log = st.session_state.setdefault("_perf_log", [])
+    perf_log.append((str(label), float(elapsed_ms)))
+    st.session_state["_perf_log"] = perf_log[-80:]
+
+
 @st.cache_data(ttl=1.5, show_spinner=False)
 def _cached_blackjack_lan_settings():
     return get_blackjack_lan_settings()
@@ -575,12 +596,39 @@ def _cached_get_account_value(account_name):
     return get_account_value(account_name)
 
 
+@st.cache_data(ttl=1.2, show_spinner=False)
+def _cached_poker_lan_settings():
+    return get_poker_lan_settings()
+
+
+@st.cache_data(ttl=0.9, show_spinner=False)
+def _cached_poker_lan_tables():
+    return get_poker_lan_tables()
+
+
+@st.cache_data(ttl=0.9, show_spinner=False)
+def _cached_find_poker_lan_table_for_player(player_name):
+    return find_poker_lan_table_for_player(player_name)
+
+
 def _invalidate_blackjack_lan_ui_caches():
     for cached_func in (
         _cached_blackjack_lan_settings,
         _cached_blackjack_lan_tables,
         _cached_find_blackjack_lan_table_for_player,
         _cached_get_account_value,
+    ):
+        try:
+            cached_func.clear()
+        except Exception:
+            pass
+
+
+def _invalidate_poker_lan_ui_caches():
+    for cached_func in (
+        _cached_poker_lan_settings,
+        _cached_poker_lan_tables,
+        _cached_find_poker_lan_table_for_player,
     ):
         try:
             cached_func.clear()
@@ -1453,6 +1501,7 @@ def _remove_active_multiplayer_presence():
             auto_remove_poker_lan_player(player_name)
         except Exception:
             pass
+        _invalidate_poker_lan_ui_caches()
 
 
 def _enforce_account_session_ownership():
@@ -1508,6 +1557,7 @@ def _auto_remove_lan_player_when_not_in_blackjack():
     joined_poker_table = find_poker_lan_table_for_player(active_player)
     if joined_poker_table is not None:
         auto_remove_poker_lan_player(active_player)
+        _invalidate_poker_lan_ui_caches()
 
 
 def _clear_blackjack_multiplayer_guest_account(delete_record=True):
@@ -5096,7 +5146,32 @@ def render_poker_table_view(public_state, viewer_name):
     pot = float(public_state.get("pot", 0.0))
     current_bet = float(public_state.get("current_bet", 0.0))
     acting = str(public_state.get("acting_player", ""))
-    board_html = _poker_render_cards_html(public_state.get("board", []))
+    board_cards = list(public_state.get("board", []))
+    board_html = _poker_render_cards_html(board_cards)
+    view_signature = (
+        street,
+        round(pot, 2),
+        round(current_bet, 2),
+        acting,
+        tuple(board_cards),
+        tuple(
+            (
+                str(player.get("name", "")),
+                round(float(player.get("stack", 0.0)), 2),
+                round(float(player.get("committed_total", 0.0)), 2),
+                bool(player.get("folded", False)),
+                bool(player.get("all_in", False)),
+                tuple(player.get("hole", [])),
+            )
+            for player in public_state.get("players", [])
+        ),
+        str(viewer_name or ""),
+    )
+    cache_key = f"poker_table_html_cache::{viewer_name or 'anon'}"
+    cached_payload = st.session_state.get(cache_key)
+    if isinstance(cached_payload, dict) and cached_payload.get("signature") == view_signature:
+        st.markdown(cached_payload.get("html", ""), unsafe_allow_html=True)
+        return
     players_html = []
     for player in public_state.get("players", []):
         classes = ["pk-seat"]
@@ -5137,6 +5212,7 @@ def render_poker_table_view(public_state, viewer_name):
         + f"<div class='pk-players'>{players_block}</div>"
         + "</div></div>"
     )
+    st.session_state[cache_key] = {"signature": view_signature, "html": html}
     st.markdown(html, unsafe_allow_html=True)
 
 
@@ -5263,12 +5339,16 @@ def render_poker_single_player(account):
 
 
 def render_poker_multiplayer(account):
+    perf_token = _perf_start("poker_multiplayer_total")
     if not account:
         st.warning("Sign in to play multiplayer poker.")
+        _perf_end(perf_token)
         return
-    tables = get_poker_lan_tables()
-    settings = get_poker_lan_settings()
-    joined_table = find_poker_lan_table_for_player(account)
+    load_token = _perf_start("poker_multiplayer_load_snapshots")
+    tables = _cached_poker_lan_tables()
+    settings = _cached_poker_lan_settings()
+    joined_table = _cached_find_poker_lan_table_for_player(account)
+    _perf_end(load_token)
     spectate_table_id = st.session_state.get("poker_lan_spectate_table_id")
     spectate_password = st.session_state.get("poker_lan_spectate_password", "")
 
@@ -5303,6 +5383,7 @@ def render_poker_multiplayer(account):
                     st.session_state["poker_lan_create_menu_open"] = False
                 else:
                     st.error(message)
+                _invalidate_poker_lan_ui_caches()
                 _fast_rerun(force=True)
         st.markdown("---")
         for table in tables:
@@ -5330,6 +5411,7 @@ def render_poker_multiplayer(account):
                     st.success(message)
                 else:
                     st.error(message)
+                _invalidate_poker_lan_ui_caches()
                 _fast_rerun(force=True)
             if col2.button("Spectate", key=f"poker_spec_{table_id}", use_container_width=True):
                 allowed, message = can_spectate_poker_lan_table(table_id, password=password)
@@ -5341,7 +5423,9 @@ def render_poker_multiplayer(account):
                 _fast_rerun(force=True)
         st.markdown("---")
         if st.button("Refresh table", key="poker_lan_refresh_table_lobby", use_container_width=True):
+            _invalidate_poker_lan_ui_caches()
             _fast_rerun(force=True)
+        _perf_end(perf_token)
         return
 
     table_to_view = joined_table
@@ -5355,12 +5439,13 @@ def render_poker_multiplayer(account):
             _fast_rerun(force=True)
             return
         table_to_view = next(
-            (entry for entry in get_poker_lan_tables() if int(entry.get("id", -1)) == int(spectate_table_id)),
+            (entry for entry in _cached_poker_lan_tables() if int(entry.get("id", -1)) == int(spectate_table_id)),
             None,
         )
         is_spectator = True
     if table_to_view is None:
         st.warning("Table not found.")
+        _perf_end(perf_token)
         return
 
     table_id = int(table_to_view.get("id", 0))
@@ -5372,6 +5457,7 @@ def render_poker_multiplayer(account):
                 st.success(message)
             else:
                 st.error(message)
+            _invalidate_poker_lan_ui_caches()
             _fast_rerun(force=True)
     else:
         if st.button("Stop spectating", key=f"poker_spec_stop_{table_id}", use_container_width=True):
@@ -5390,6 +5476,7 @@ def render_poker_multiplayer(account):
                     st.error(message)
                 if started:
                     st.info("Hand started.")
+                _invalidate_poker_lan_ui_caches()
                 _fast_rerun(force=True)
         for name, player_state in table_to_view.get("player_states", {}).items():
             stack = float(player_state.get("stack_cents", 0)) / 100.0
@@ -5397,7 +5484,9 @@ def render_poker_multiplayer(account):
             st.write(f"- {name}: ${format_money(stack)} | {ready}")
         st.markdown("---")
         if st.button("Refresh table", key=f"poker_lan_refresh_table_waiting_{table_id}", use_container_width=True):
+            _invalidate_poker_lan_ui_caches()
             _fast_rerun(force=True)
+        _perf_end(perf_token)
         return
 
     hand_state = table_to_view.get("hand_state")
@@ -5409,7 +5498,9 @@ def render_poker_multiplayer(account):
         viewer_name=account,
         reveal_all=bool(is_spectator or hand_state.get("street") == "finished"),
     )
+    render_token = _perf_start("poker_multiplayer_render_table")
     render_poker_table_view(public, account)
+    _perf_end(render_token)
     if (not is_spectator) and hand_state.get("street") != "finished":
         legal = poker_legal_actions(hand_state, account)
         actions = legal.get("actions", [])
@@ -5446,6 +5537,7 @@ def render_poker_multiplayer(account):
                         st.success(message)
                     else:
                         st.error(message)
+                    _invalidate_poker_lan_ui_caches()
                     _fast_rerun(force=True)
 
     table_signature = (
@@ -5466,7 +5558,9 @@ def render_poker_multiplayer(account):
     _schedule_non_blocking_rerun(interval_ms, key=f"poker_lan_autorefresh_{table_id}", allow_blocking_fallback=False)
     st.markdown("---")
     if st.button("Refresh table", key=f"poker_lan_refresh_table_bottom_{table_id}", use_container_width=True):
+        _invalidate_poker_lan_ui_caches()
         _fast_rerun(force=True)
+    _perf_end(perf_token)
 
 
 def poker_ui():
@@ -5487,7 +5581,7 @@ def poker_ui():
 
     joined_table = None
     if account is not None:
-        joined_table = find_poker_lan_table_for_player(account)
+        joined_table = _cached_find_poker_lan_table_for_player(account)
     is_multiplayer_round_active = (
         mode == "Multiplayer"
         and isinstance(joined_table, dict)
@@ -6154,6 +6248,14 @@ def main():
         render_home_analytics_sidebar(st.session_state["current_account"])
     render_top_controls()
     render_back_button()
+    if _perf_enabled():
+        with st.expander("Performance debug", expanded=False):
+            perf_rows = st.session_state.get("_perf_log", [])
+            if not perf_rows:
+                st.caption("No samples yet.")
+            else:
+                for label, elapsed in perf_rows[-20:]:
+                    st.caption(f"{label}: {elapsed:.1f} ms")
 
     if st.session_state["show_auth_flow"]:
         auth_ui()
