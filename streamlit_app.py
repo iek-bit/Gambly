@@ -3597,26 +3597,44 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
         other_players = [name for name in ordered_players if name != viewer_player]
         other_count = len(other_players)
         if other_count == 1:
-            seat_positions[other_players[0]] = (50.0, 24.0)
+            # Keep a single opponent opposite you, but below dealer area.
+            seat_positions[other_players[0]] = (50.0, 38.0)
         elif other_count > 1:
+            # Spread opponents across an upper-side arc while avoiding dealer overlap.
+            arc_start = 210.0
+            arc_end = 330.0
+            radius_x = 38.0
+            radius_y = 22.0
+            center_x = 50.0
+            center_y = 58.0
+            min_y = 36.0
             for index, player_name in enumerate(other_players):
                 spread_progress = index / (other_count - 1)
-                angle_deg = 210.0 + (120.0 * spread_progress)
+                angle_deg = arc_start + ((arc_end - arc_start) * spread_progress)
                 radians = math.radians(angle_deg)
-                x = 50.0 + (41.0 * math.cos(radians))
-                y = 56.0 + (31.0 * math.sin(radians))
+                x = center_x + (radius_x * math.cos(radians))
+                y = center_y + (radius_y * math.sin(radians))
+                y = max(min_y, y)
                 seat_positions[player_name] = (x, y)
     else:
         player_count = len(ordered_players)
         if player_count == 1:
             seat_positions[ordered_players[0]] = (50.0, 82.0)
         elif player_count > 1:
+            arc_start = 205.0
+            arc_end = 335.0
+            radius_x = 39.0
+            radius_y = 23.0
+            center_x = 50.0
+            center_y = 58.0
+            min_y = 35.0
             for index, player_name in enumerate(ordered_players):
                 spread_progress = index / (player_count - 1)
-                angle_deg = 205.0 + (130.0 * spread_progress)
+                angle_deg = arc_start + ((arc_end - arc_start) * spread_progress)
                 radians = math.radians(angle_deg)
-                x = 50.0 + (42.0 * math.cos(radians))
-                y = 56.0 + (31.0 * math.sin(radians))
+                x = center_x + (radius_x * math.cos(radians))
+                y = center_y + (radius_y * math.sin(radians))
+                y = max(min_y, y)
                 seat_positions[player_name] = (x, y)
 
     player_blocks = []
