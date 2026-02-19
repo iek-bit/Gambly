@@ -2119,8 +2119,11 @@ def leaderboards_ui():
     )
     selected_scope = STAT_SCOPE_OPTIONS[selected_scope_label]
     accounts_snapshot = get_accounts_snapshot(selected_scope)
+    accounts_snapshot = {
+        name: data for name, data in accounts_snapshot.items() if not str(name).strip().startswith("guest_")
+    }
     if not accounts_snapshot:
-        st.info("No accounts found.")
+        st.info("No eligible accounts found.")
         return
 
     metric_options = {
