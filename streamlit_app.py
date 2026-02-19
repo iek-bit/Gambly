@@ -1845,6 +1845,19 @@ def render_back_button():
         _fast_rerun()
 
 
+def _complete_auth_success(account, message):
+    st.session_state["current_account"] = account
+    st.session_state["settings_loaded_for_account"] = None
+    st.session_state["show_auth_flow"] = False
+    st.session_state["auth_flow_mode"] = None
+    st.session_state["pending_force_sign_in_account"] = None
+    st.session_state["pending_new_account"] = None
+    st.session_state["active_action"] = "Home"
+    st.session_state["redirect_to_home"] = False
+    st.success(message)
+    _fast_rerun(force=True)
+
+
 def auth_ui():
     if st.session_state.get("storage_unavailable", False):
         st.error("Unable to sign in or create an account right now. Please try again shortly.")
@@ -1898,13 +1911,7 @@ def auth_ui():
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
-                st.session_state["current_account"] = account
-                st.session_state["settings_loaded_for_account"] = None
-                st.session_state["redirect_to_home"] = True
-                st.session_state["show_auth_flow"] = False
-                st.session_state["auth_flow_mode"] = None
-                st.success(f"Signed in as {account}.")
-                _fast_rerun()
+                _complete_auth_success(account, f"Signed in as {account}.")
                 return
             if password == stored_password:
                 acquired, reason = acquire_account_session(account, _current_session_id())
@@ -1916,13 +1923,7 @@ def auth_ui():
                     else:
                         st.error("Failed to start your session. Please try again.")
                     return
-                st.session_state["current_account"] = account
-                st.session_state["settings_loaded_for_account"] = None
-                st.session_state["redirect_to_home"] = True
-                st.session_state["show_auth_flow"] = False
-                st.session_state["auth_flow_mode"] = None
-                st.success(f"Signed in as {account}.")
-                _fast_rerun()
+                _complete_auth_success(account, f"Signed in as {account}.")
                 return
             st.error("Incorrect password.")
 
@@ -1941,14 +1942,7 @@ def auth_ui():
                     else:
                         st.error("Could not force sign in. Please try again.")
                     return
-                st.session_state["current_account"] = pending_force_account
-                st.session_state["settings_loaded_for_account"] = None
-                st.session_state["redirect_to_home"] = True
-                st.session_state["show_auth_flow"] = False
-                st.session_state["auth_flow_mode"] = None
-                st.session_state["pending_force_sign_in_account"] = None
-                st.success(f"Signed in as {pending_force_account}.")
-                _fast_rerun()
+                _complete_auth_success(pending_force_account, f"Signed in as {pending_force_account}.")
                 return
 
     if flow_mode == "create_account":
@@ -1986,13 +1980,7 @@ def auth_ui():
                 else:
                     st.error("Failed to start your session. Please try signing in again.")
                 return
-            st.session_state["current_account"] = account
-            st.session_state["settings_loaded_for_account"] = None
-            st.session_state["redirect_to_home"] = True
-            st.session_state["show_auth_flow"] = False
-            st.session_state["auth_flow_mode"] = None
-            st.success(f"Account created and signed in as {account}.")
-            _fast_rerun()
+            _complete_auth_success(account, f"Account created and signed in as {account}.")
             return
 
 
