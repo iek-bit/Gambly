@@ -2001,6 +2001,28 @@ def render_back_button():
     # Back button is hidden while a guessing round is actively running.
     if is_guessing_in_progress():
         return
+    active_action = st.session_state.get("active_action")
+    if active_action == "Blackjack":
+        blackjack_round = st.session_state.get("blackjack_round")
+        if isinstance(blackjack_round, dict) and blackjack_round.get("status") in {"player_turn", "dealer_turn"}:
+            return
+        current_account = st.session_state.get("current_account")
+        guest_multiplayer_account = st.session_state.get("blackjack_multiplayer_guest_account")
+        active_player = current_account or guest_multiplayer_account
+        if active_player:
+            joined_table = _cached_find_blackjack_lan_table_for_player(active_player)
+            if isinstance(joined_table, dict) and bool(joined_table.get("in_progress", False)):
+                return
+    if active_action == "Poker":
+        poker_single_state = st.session_state.get("poker_single_state")
+        poker_hand = poker_single_state.get("hand_state") if isinstance(poker_single_state, dict) else None
+        if isinstance(poker_hand, dict) and poker_hand.get("street") not in {None, "finished"}:
+            return
+        current_account = st.session_state.get("current_account")
+        if current_account:
+            joined_poker_table = _cached_find_poker_lan_table_for_player(current_account)
+            if isinstance(joined_poker_table, dict) and bool(joined_poker_table.get("in_progress", False)):
+                return
 
     if not st.session_state.get("show_auth_flow") and st.session_state.get("active_action") == "Home":
         return
@@ -4672,17 +4694,19 @@ def blackjack_ui():
                 st.success(f"You are queued for Table {table_id}.")
             else:
                 st.success(f"You are seated at Table {table_id}.")
-
-            if st.button("Leave table", key=f"blackjack_lan_leave_{table_id}", use_container_width=True):
-                left, message = leave_blackjack_lan_table(table_id, account)
-                _invalidate_blackjack_lan_ui_caches()
-                if left:
-                    st.success(message)
-                else:
-                    st.error(message)
-                if st.session_state.get("blackjack_multiplayer_guest_account") == account:
-                    _clear_blackjack_multiplayer_guest_account(delete_record=True)
-                _fast_rerun()
+            if bool(table_to_view.get("in_progress", False)):
+                st.caption("Leave table is disabled during an active hand.")
+            else:
+                if st.button("Leave table", key=f"blackjack_lan_leave_{table_id}", use_container_width=True):
+                    left, message = leave_blackjack_lan_table(table_id, account)
+                    _invalidate_blackjack_lan_ui_caches()
+                    if left:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                    if st.session_state.get("blackjack_multiplayer_guest_account") == account:
+                        _clear_blackjack_multiplayer_guest_account(delete_record=True)
+                    _fast_rerun()
 
         players = table_to_view.get("players", [])
         pending_players = table_to_view.get("pending_players", [])
@@ -5551,14 +5575,17 @@ def render_poker_multiplayer(account):
     table_id = int(table_to_view.get("id", 0))
     st.markdown(f"### {table_to_view.get('name', f'Poker Table {table_id}')}")
     if not is_spectator:
-        if st.button("Leave table", key=f"poker_leave_{table_id}", use_container_width=True):
-            ok, message = leave_poker_lan_table(table_id, account)
-            if ok:
-                st.success(message)
-            else:
-                st.error(message)
-            _invalidate_poker_lan_ui_caches()
-            _fast_rerun(force=True)
+        if bool(table_to_view.get("in_progress", False)):
+            st.caption("Leave table is disabled during an active hand.")
+        else:
+            if st.button("Leave table", key=f"poker_leave_{table_id}", use_container_width=True):
+                ok, message = leave_poker_lan_table(table_id, account)
+                if ok:
+                    st.success(message)
+                else:
+                    st.error(message)
+                _invalidate_poker_lan_ui_caches()
+                _fast_rerun(force=True)
     else:
         if st.button("Stop spectating", key=f"poker_spec_stop_{table_id}", use_container_width=True):
             st.session_state["poker_lan_spectate_table_id"] = None
