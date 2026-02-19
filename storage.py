@@ -11,10 +11,13 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from money_utils import house_round_balance, house_round_credit, house_round_delta
+from poker_engine import apply_action as poker_apply_action
+from poker_engine import create_hand as poker_create_hand
+from poker_engine import legal_actions as poker_legal_actions
 
 DEFAULT_ODDS = 1.5
 ODDS_ACCOUNT_KEY = "__house_odds__"
-GAME_STAT_KEYS = {"player_guess", "computer_guess", "blackjack"}
+GAME_STAT_KEYS = {"player_guess", "computer_guess", "blackjack", "poker"}
 DEFAULT_ACCOUNT_SESSION_TTL_SECONDS = 6 * 60 * 60
 # Keep LAN players active longer between UI interactions so seated players do
 # not get dropped while coordinating bets/ready states.
@@ -50,6 +53,7 @@ def _default_data():
         "active_sessions": {},
         "game_limits": _default_game_limits(),
         "blackjack_lan": _default_blackjack_lan_state(),
+        "poker_lan": _default_poker_lan_state(),
     }
 
 
@@ -1413,6 +1417,7 @@ def _normalize_loaded_data(loaded):
         data["game_limits"] = limits
 
     data["blackjack_lan"] = _normalize_blackjack_lan_state(loaded.get("blackjack_lan", {}))
+    data["poker_lan"] = _normalize_poker_lan_state(loaded.get("poker_lan", {}))
     return data
 
 
@@ -1682,6 +1687,9 @@ def delete_account(name):
                         table["phase"] = BLACKJACK_LAN_PHASE_WAITING_FOR_BETS
                     table["last_updated_epoch"] = time.time()
         data["blackjack_lan"] = lan_state
+        poker_lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        _poker_remove_player_from_all_tables_unlocked(data, poker_lan_state, name, allow_in_hand=True)
+        data["poker_lan"] = poker_lan_state
         _write_data_unlocked(data)
         return True
 
@@ -2651,5 +2659,813 @@ def blackjack_lan_player_action(table_id, player_name, action):
             table["last_updated_epoch"] = time.time()
 
         data["blackjack_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, "Action submitted."
+
+
+POKER_LAN_DEFAULT_TABLE_COUNT = 3
+POKER_LAN_DEFAULT_MAX_PLAYERS = 6
+POKER_LAN_DEFAULT_MIN_BUY_IN = 40.0
+POKER_LAN_DEFAULT_MAX_BUY_IN = 400.0
+POKER_LAN_DEFAULT_SMALL_BLIND = 1.0
+POKER_LAN_DEFAULT_BIG_BLIND = 2.0
+POKER_LAN_DEFAULT_TURN_TIMEOUT_SECONDS = 30
+POKER_LAN_PHASE_WAITING = "waiting_ready"
+POKER_LAN_PHASE_IN_HAND = "in_hand"
+POKER_LAN_PHASE_FINISHED = "finished"
+
+
+def _default_poker_lan_settings():
+    return {
+        "default_max_players": POKER_LAN_DEFAULT_MAX_PLAYERS,
+        "default_min_buy_in": POKER_LAN_DEFAULT_MIN_BUY_IN,
+        "default_max_buy_in": POKER_LAN_DEFAULT_MAX_BUY_IN,
+        "default_small_blind": POKER_LAN_DEFAULT_SMALL_BLIND,
+        "default_big_blind": POKER_LAN_DEFAULT_BIG_BLIND,
+        "allow_spectators_by_default": True,
+        "turn_timeout_seconds": POKER_LAN_DEFAULT_TURN_TIMEOUT_SECONDS,
+    }
+
+
+def _coerce_poker_currency(raw_value, fallback, allow_none=False):
+    if allow_none and raw_value is None:
+        return None
+    try:
+        normalized = house_round_credit(float(raw_value))
+    except Exception:
+        normalized = house_round_credit(float(fallback))
+    if normalized < 0:
+        return 0.0
+    return float(normalized)
+
+
+def _coerce_poker_turn_timeout(raw_value, fallback):
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        try:
+            value = int(fallback)
+        except (TypeError, ValueError):
+            value = POKER_LAN_DEFAULT_TURN_TIMEOUT_SECONDS
+    return max(5, value)
+
+
+def _normalize_poker_lan_settings(raw_settings):
+    settings = _default_poker_lan_settings()
+    if not isinstance(raw_settings, dict):
+        return settings
+    settings["default_max_players"] = max(2, min(6, int(raw_settings.get("default_max_players", settings["default_max_players"]))))
+    settings["default_min_buy_in"] = _coerce_poker_currency(
+        raw_settings.get("default_min_buy_in", settings["default_min_buy_in"]),
+        settings["default_min_buy_in"],
+    )
+    settings["default_max_buy_in"] = _coerce_poker_currency(
+        raw_settings.get("default_max_buy_in", settings["default_max_buy_in"]),
+        settings["default_max_buy_in"],
+    )
+    if settings["default_max_buy_in"] < settings["default_min_buy_in"]:
+        settings["default_max_buy_in"] = settings["default_min_buy_in"]
+    settings["default_small_blind"] = max(
+        0.01,
+        _coerce_poker_currency(raw_settings.get("default_small_blind", settings["default_small_blind"]), settings["default_small_blind"]),
+    )
+    settings["default_big_blind"] = max(
+        settings["default_small_blind"],
+        _coerce_poker_currency(raw_settings.get("default_big_blind", settings["default_big_blind"]), settings["default_big_blind"]),
+    )
+    settings["allow_spectators_by_default"] = bool(
+        raw_settings.get("allow_spectators_by_default", settings["allow_spectators_by_default"])
+    )
+    settings["turn_timeout_seconds"] = _coerce_poker_turn_timeout(
+        raw_settings.get("turn_timeout_seconds", settings["turn_timeout_seconds"]),
+        settings["turn_timeout_seconds"],
+    )
+    return settings
+
+
+def _normalize_poker_lan_table_name(name, fallback_id):
+    if not isinstance(name, str) or not name.strip():
+        return f"Poker Table {int(fallback_id)}"
+    return name.strip()[:60]
+
+
+def _default_poker_lan_table(table_id, settings=None):
+    normalized_settings = _normalize_poker_lan_settings(settings or {})
+    return {
+        "id": int(table_id),
+        "name": _normalize_poker_lan_table_name(None, table_id),
+        "host": None,
+        "players": [],
+        "pending_players": [],
+        "player_states": {},
+        "max_players": int(normalized_settings["default_max_players"]),
+        "min_buy_in": float(normalized_settings["default_min_buy_in"]),
+        "max_buy_in": float(normalized_settings["default_max_buy_in"]),
+        "small_blind": float(normalized_settings["default_small_blind"]),
+        "big_blind": float(normalized_settings["default_big_blind"]),
+        "allow_spectators": bool(normalized_settings["allow_spectators_by_default"]),
+        "spectators_require_password": False,
+        "is_private": False,
+        "password": "",
+        "phase": POKER_LAN_PHASE_WAITING,
+        "in_progress": False,
+        "round": 0,
+        "dealer_index": 0,
+        "hand_state": None,
+        "hand_start_stacks": {},
+        "turn_started_epoch": 0.0,
+        "turn_timeout_seconds": int(normalized_settings["turn_timeout_seconds"]),
+        "history": [],
+        "last_updated_epoch": 0.0,
+    }
+
+
+def _normalize_poker_player_state(raw_state):
+    state = {
+        "stack_cents": 0,
+        "ready": False,
+        "last_hand_delta_cents": 0,
+    }
+    if isinstance(raw_state, dict):
+        try:
+            state["stack_cents"] = max(0, int(raw_state.get("stack_cents", 0)))
+        except (TypeError, ValueError):
+            state["stack_cents"] = 0
+        state["ready"] = bool(raw_state.get("ready", False))
+        try:
+            state["last_hand_delta_cents"] = int(raw_state.get("last_hand_delta_cents", 0))
+        except (TypeError, ValueError):
+            state["last_hand_delta_cents"] = 0
+    return state
+
+
+def _normalize_poker_lan_table(raw_table, fallback_id, settings=None):
+    table = _default_poker_lan_table(fallback_id, settings=settings)
+    if not isinstance(raw_table, dict):
+        return table
+    try:
+        table["id"] = int(raw_table.get("id", fallback_id))
+    except (TypeError, ValueError):
+        table["id"] = int(fallback_id)
+    table["name"] = _normalize_poker_lan_table_name(raw_table.get("name"), table["id"])
+    table["host"] = raw_table.get("host") if isinstance(raw_table.get("host"), str) else None
+    raw_players = raw_table.get("players", [])
+    if isinstance(raw_players, list):
+        table["players"] = [str(name).strip() for name in raw_players if str(name).strip()][: int(table["max_players"])]
+    raw_pending = raw_table.get("pending_players", [])
+    if isinstance(raw_pending, list):
+        table["pending_players"] = [str(name).strip() for name in raw_pending if str(name).strip()]
+    try:
+        table["max_players"] = max(2, min(6, int(raw_table.get("max_players", table["max_players"]))))
+    except (TypeError, ValueError):
+        pass
+    table["min_buy_in"] = _coerce_poker_currency(raw_table.get("min_buy_in", table["min_buy_in"]), table["min_buy_in"])
+    table["max_buy_in"] = _coerce_poker_currency(raw_table.get("max_buy_in", table["max_buy_in"]), table["max_buy_in"])
+    if table["max_buy_in"] < table["min_buy_in"]:
+        table["max_buy_in"] = table["min_buy_in"]
+    table["small_blind"] = max(
+        0.01,
+        _coerce_poker_currency(raw_table.get("small_blind", table["small_blind"]), table["small_blind"]),
+    )
+    table["big_blind"] = max(
+        table["small_blind"],
+        _coerce_poker_currency(raw_table.get("big_blind", table["big_blind"]), table["big_blind"]),
+    )
+    table["allow_spectators"] = bool(raw_table.get("allow_spectators", table["allow_spectators"]))
+    table["spectators_require_password"] = bool(
+        raw_table.get("spectators_require_password", table["spectators_require_password"])
+    )
+    table["is_private"] = bool(raw_table.get("is_private", table["is_private"]))
+    table["password"] = str(raw_table.get("password", "") or "")
+    table["phase"] = str(raw_table.get("phase", table["phase"]))
+    table["in_progress"] = bool(raw_table.get("in_progress", table["in_progress"]))
+    try:
+        table["round"] = max(0, int(raw_table.get("round", table["round"])))
+    except (TypeError, ValueError):
+        pass
+    try:
+        table["dealer_index"] = max(0, int(raw_table.get("dealer_index", table["dealer_index"])))
+    except (TypeError, ValueError):
+        pass
+    if isinstance(raw_table.get("hand_state"), dict):
+        table["hand_state"] = raw_table.get("hand_state")
+    if isinstance(raw_table.get("hand_start_stacks"), dict):
+        normalized_stacks = {}
+        for name, value in raw_table.get("hand_start_stacks", {}).items():
+            if not isinstance(name, str):
+                continue
+            try:
+                normalized_stacks[str(name)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        table["hand_start_stacks"] = normalized_stacks
+    try:
+        table["turn_started_epoch"] = float(raw_table.get("turn_started_epoch", table["turn_started_epoch"]))
+    except (TypeError, ValueError):
+        pass
+    table["turn_timeout_seconds"] = _coerce_poker_turn_timeout(
+        raw_table.get("turn_timeout_seconds", table["turn_timeout_seconds"]),
+        table["turn_timeout_seconds"],
+    )
+    if isinstance(raw_table.get("history"), list):
+        table["history"] = [str(entry) for entry in raw_table.get("history", []) if isinstance(entry, str)][-40:]
+    try:
+        table["last_updated_epoch"] = float(raw_table.get("last_updated_epoch", table["last_updated_epoch"]))
+    except (TypeError, ValueError):
+        pass
+
+    raw_states = raw_table.get("player_states", {})
+    normalized_states = {}
+    if isinstance(raw_states, dict):
+        for player_name in table["players"]:
+            normalized_states[player_name] = _normalize_poker_player_state(raw_states.get(player_name, {}))
+    for player_name in table["players"]:
+        normalized_states.setdefault(player_name, _normalize_poker_player_state({}))
+    table["player_states"] = normalized_states
+
+    if table["host"] not in table["players"]:
+        table["host"] = table["players"][0] if table["players"] else None
+
+    return table
+
+
+def _default_poker_lan_state():
+    settings = _default_poker_lan_settings()
+    return {
+        "settings": settings,
+        "tables": [_default_poker_lan_table(index + 1, settings=settings) for index in range(POKER_LAN_DEFAULT_TABLE_COUNT)],
+    }
+
+
+def _normalize_poker_lan_state(raw_state):
+    state = _default_poker_lan_state()
+    if not isinstance(raw_state, dict):
+        return state
+    settings = _normalize_poker_lan_settings(raw_state.get("settings", {}))
+    state["settings"] = settings
+    raw_tables = raw_state.get("tables", [])
+    normalized_tables = []
+    if isinstance(raw_tables, list):
+        for index, raw_table in enumerate(raw_tables):
+            normalized_tables.append(_normalize_poker_lan_table(raw_table, index + 1, settings=settings))
+    if not normalized_tables:
+        normalized_tables = [_default_poker_lan_table(index + 1, settings=settings) for index in range(POKER_LAN_DEFAULT_TABLE_COUNT)]
+    by_id = {}
+    for table in normalized_tables:
+        by_id[int(table["id"])] = table
+    state["tables"] = sorted(by_id.values(), key=lambda item: int(item.get("id", 0)))
+    return state
+
+
+def _poker_lan_next_table_id(lan_state):
+    max_id = 0
+    for table in lan_state.get("tables", []):
+        try:
+            max_id = max(max_id, int(table.get("id", 0)))
+        except (TypeError, ValueError):
+            pass
+    return max_id + 1
+
+
+def _poker_lan_table_by_id(lan_state, table_id):
+    try:
+        normalized_id = int(table_id)
+    except (TypeError, ValueError):
+        return None
+    for table in lan_state.get("tables", []):
+        if int(table.get("id", -1)) == normalized_id:
+            return table
+    return None
+
+
+def _poker_lan_table_member_state(table, player_name):
+    if player_name in table.get("players", []):
+        return "player"
+    if player_name in table.get("pending_players", []):
+        return "pending"
+    return None
+
+
+def _poker_lan_append_history(table, message):
+    history = table.setdefault("history", [])
+    history.append(str(message))
+    table["history"] = history[-40:]
+
+
+def _poker_finalize_finished_hand_unlocked(data, table):
+    hand_state = table.get("hand_state")
+    if not isinstance(hand_state, dict):
+        return
+    if hand_state.get("street") != "finished":
+        return
+
+    players = hand_state.get("players", [])
+    for player in players:
+        player_name = player.get("name")
+        if not isinstance(player_name, str):
+            continue
+        current_stack = int(player.get("stack", 0))
+        table.setdefault("player_states", {}).setdefault(player_name, _normalize_poker_player_state({}))
+        table["player_states"][player_name]["stack_cents"] = current_stack
+        start_stack = int(table.get("hand_start_stacks", {}).get(player_name, current_stack))
+        delta = current_stack - start_stack
+        table["player_states"][player_name]["last_hand_delta_cents"] = delta
+        account = data.get("accounts", {}).get(player_name)
+        if not isinstance(account, dict):
+            continue
+        buy_in = from_cents(max(0, -delta))
+        payout = from_cents(max(0, delta))
+        won = delta > 0
+        if buy_in > 0 or payout > 0:
+            stats = _normalize_account_stats(account.get("stats", {}))
+            _apply_result_to_stats_bucket(stats, buy_in, payout, won)
+            breakdown = stats.get("game_breakdown", {})
+            poker_stats = _normalize_stats_bucket(breakdown.get("poker", {}))
+            _apply_result_to_stats_bucket(poker_stats, buy_in, payout, won)
+            breakdown["poker"] = poker_stats
+            stats["game_breakdown"] = breakdown
+            account["stats"] = stats
+    table["phase"] = POKER_LAN_PHASE_FINISHED
+    table["in_progress"] = False
+
+
+def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, allow_in_hand=False):
+    removed = False
+    for table in lan_state.get("tables", []):
+        membership = _poker_lan_table_member_state(table, player_name)
+        if membership is None:
+            continue
+        if table.get("in_progress") and not allow_in_hand and membership == "player":
+            continue
+        removed = True
+        if membership == "pending":
+            table["pending_players"] = [name for name in table.get("pending_players", []) if name != player_name]
+            table["last_updated_epoch"] = time.time()
+            continue
+
+        stack_cents = int(table.get("player_states", {}).get(player_name, {}).get("stack_cents", 0))
+        if stack_cents > 0 and player_name in data.get("accounts", {}):
+            data["accounts"][player_name]["balance"] = house_round_balance(
+                data["accounts"][player_name].get("balance", 0.0) + from_cents(stack_cents)
+            )
+
+        table["players"] = [name for name in table.get("players", []) if name != player_name]
+        table.get("player_states", {}).pop(player_name, None)
+        if table.get("host") == player_name:
+            table["host"] = table["players"][0] if table["players"] else None
+
+        if table.get("in_progress") and isinstance(table.get("hand_state"), dict):
+            for hand_player in table["hand_state"].get("players", []):
+                if hand_player.get("name") == player_name:
+                    hand_player["folded"] = True
+                    hand_player["all_in"] = True
+            _poker_lan_append_history(table, f"{player_name} left during an active hand and was folded.")
+
+        if not table["players"]:
+            reset = _default_poker_lan_table(table.get("id", 1), settings=lan_state.get("settings", {}))
+            reset["name"] = _normalize_poker_lan_table_name(table.get("name"), table.get("id", 1))
+            table.clear()
+            table.update(reset)
+        else:
+            table["ready_players"] = []
+            table["last_updated_epoch"] = time.time()
+    return removed
+
+
+def get_poker_lan_tables():
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return deepcopy(lan_state.get("tables", []))
+
+
+def get_poker_lan_settings():
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return deepcopy(lan_state.get("settings", _default_poker_lan_settings()))
+
+
+def can_spectate_poker_lan_table(table_id, password=""):
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        table = _poker_lan_table_by_id(lan_state, table_id)
+        if table is None:
+            return False, "Table not found."
+        settings = _normalize_poker_lan_settings(lan_state.get("settings", {}))
+        if not bool(settings.get("allow_spectators_by_default", True)):
+            return False, "Spectating is disabled by admin settings."
+        if not bool(table.get("allow_spectators", True)):
+            return False, "Spectating is disabled for this table."
+        requires_password = bool(table.get("is_private", False)) or bool(table.get("spectators_require_password", False))
+        if requires_password and str(table.get("password", "")) != str(password or ""):
+            return False, "Incorrect table password."
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, "Spectating allowed."
+
+
+def find_poker_lan_table_for_player(player_name):
+    if not isinstance(player_name, str) or not player_name.strip():
+        return None
+    normalized_player = player_name.strip()
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        for table in lan_state.get("tables", []):
+            membership = _poker_lan_table_member_state(table, normalized_player)
+            if membership is not None:
+                found = deepcopy(table)
+                found["membership"] = membership
+                data["poker_lan"] = lan_state
+                _write_data_unlocked(data)
+                return found
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return None
+
+
+def create_poker_lan_table(
+    max_players=None,
+    min_buy_in=None,
+    max_buy_in=None,
+    small_blind=None,
+    big_blind=None,
+    allow_spectators=None,
+    spectators_require_password=None,
+    is_private=None,
+    password=None,
+    table_name=None,
+    turn_timeout_seconds=None,
+):
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        settings = _normalize_poker_lan_settings(lan_state.get("settings", {}))
+        table_id = _poker_lan_next_table_id(lan_state)
+        table = _default_poker_lan_table(table_id, settings=settings)
+        if max_players is not None:
+            try:
+                table["max_players"] = max(2, min(6, int(max_players)))
+            except (TypeError, ValueError):
+                pass
+        if min_buy_in is not None:
+            table["min_buy_in"] = _coerce_poker_currency(min_buy_in, table["min_buy_in"])
+        if max_buy_in is not None:
+            table["max_buy_in"] = _coerce_poker_currency(max_buy_in, table["max_buy_in"])
+        if table["max_buy_in"] < table["min_buy_in"]:
+            table["max_buy_in"] = table["min_buy_in"]
+        if small_blind is not None:
+            table["small_blind"] = max(0.01, _coerce_poker_currency(small_blind, table["small_blind"]))
+        if big_blind is not None:
+            table["big_blind"] = max(table["small_blind"], _coerce_poker_currency(big_blind, table["big_blind"]))
+        if allow_spectators is not None:
+            table["allow_spectators"] = bool(allow_spectators)
+        if spectators_require_password is not None:
+            table["spectators_require_password"] = bool(spectators_require_password)
+        if is_private is not None:
+            table["is_private"] = bool(is_private)
+        if password is not None:
+            table["password"] = str(password)
+        if table_name is not None:
+            table["name"] = _normalize_poker_lan_table_name(table_name, table_id)
+        if turn_timeout_seconds is not None:
+            table["turn_timeout_seconds"] = _coerce_poker_turn_timeout(turn_timeout_seconds, table["turn_timeout_seconds"])
+        if bool(table.get("is_private")) and (not str(table.get("password", "")).strip()):
+            return False, "Private tables must have a password."
+        if bool(table.get("spectators_require_password")) and (not str(table.get("password", "")).strip()):
+            return False, "Tables requiring spectator password must define a password."
+
+        lane = lan_state.setdefault("tables", [])
+        for existing in lane:
+            if _normalize_poker_lan_table_name(existing.get("name"), existing.get("id")) == table["name"]:
+                return False, "A table with that name already exists."
+        lane.append(table)
+        lan_state["tables"] = sorted(lane, key=lambda item: int(item.get("id", 0)))
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, f"Created table: {table['name']}"
+
+
+def delete_poker_lan_table(table_id):
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        table = _poker_lan_table_by_id(lan_state, table_id)
+        if table is None:
+            return False, "Table not found."
+        if bool(table.get("in_progress")):
+            return False, "Cannot delete a table during an active hand."
+        if table.get("players") or table.get("pending_players"):
+            return False, "Cannot delete table while players are seated or queued."
+        lan_state["tables"] = [entry for entry in lan_state.get("tables", []) if int(entry.get("id", -1)) != int(table_id)]
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, f"Deleted table {int(table_id)}."
+
+
+def update_poker_lan_table_settings(
+    table_id,
+    max_players,
+    min_buy_in,
+    max_buy_in,
+    small_blind,
+    big_blind,
+    allow_spectators=None,
+    spectators_require_password=None,
+    is_private=None,
+    password=None,
+    table_name=None,
+    turn_timeout_seconds=None,
+):
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        table = _poker_lan_table_by_id(lan_state, table_id)
+        if table is None:
+            return False, "Table not found."
+        if bool(table.get("in_progress")):
+            return False, "Cannot edit table during active hand."
+
+        try:
+            table["max_players"] = max(2, min(6, int(max_players)))
+        except (TypeError, ValueError):
+            pass
+        table["min_buy_in"] = _coerce_poker_currency(min_buy_in, table["min_buy_in"])
+        table["max_buy_in"] = _coerce_poker_currency(max_buy_in, table["max_buy_in"])
+        table["small_blind"] = max(0.01, _coerce_poker_currency(small_blind, table["small_blind"]))
+        table["big_blind"] = max(table["small_blind"], _coerce_poker_currency(big_blind, table["big_blind"]))
+        if table["max_buy_in"] < table["min_buy_in"]:
+            table["max_buy_in"] = table["min_buy_in"]
+
+        if allow_spectators is not None:
+            table["allow_spectators"] = bool(allow_spectators)
+        if spectators_require_password is not None:
+            table["spectators_require_password"] = bool(spectators_require_password)
+        if is_private is not None:
+            table["is_private"] = bool(is_private)
+        if password is not None:
+            table["password"] = str(password)
+        if table_name is not None:
+            table["name"] = _normalize_poker_lan_table_name(table_name, table_id)
+        if turn_timeout_seconds is not None:
+            table["turn_timeout_seconds"] = _coerce_poker_turn_timeout(turn_timeout_seconds, table["turn_timeout_seconds"])
+
+        if bool(table.get("is_private")) and (not str(table.get("password", "")).strip()):
+            return False, "Private tables must have a password."
+        if bool(table.get("spectators_require_password")) and (not str(table.get("password", "")).strip()):
+            return False, "Tables requiring spectator password must define a password."
+
+        if len(table.get("players", [])) > int(table.get("max_players", 6)):
+            return False, "Reduce player count before lowering max players."
+
+        table["last_updated_epoch"] = time.time()
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, "Table settings updated."
+
+
+def update_poker_lan_global_settings(turn_timeout_seconds, allow_spectators_by_default=None):
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        settings = _normalize_poker_lan_settings(lan_state.get("settings", {}))
+        settings["turn_timeout_seconds"] = _coerce_poker_turn_timeout(turn_timeout_seconds, settings["turn_timeout_seconds"])
+        if allow_spectators_by_default is not None:
+            settings["allow_spectators_by_default"] = bool(allow_spectators_by_default)
+        lan_state["settings"] = settings
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, "Poker multiplayer settings updated."
+
+
+def join_poker_lan_table(table_id, player_name, password="", buy_in=None):
+    if not isinstance(player_name, str) or not player_name.strip():
+        return False, "Invalid player."
+    normalized_player = player_name.strip()
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        if normalized_player not in data.get("accounts", {}):
+            return False, "You must be signed in to join."
+
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        destination = _poker_lan_table_by_id(lan_state, table_id)
+        if destination is None:
+            return False, "Table not found."
+
+        if bool(destination.get("is_private")):
+            if str(destination.get("password", "")) != str(password or ""):
+                return False, "Incorrect table password."
+
+        for table in lan_state.get("tables", []):
+            membership = _poker_lan_table_member_state(table, normalized_player)
+            if membership is None:
+                continue
+            if int(table.get("id", -1)) == int(table_id):
+                return True, "Already in this table."
+            if bool(table.get("in_progress")):
+                return False, "Leave your current active table before joining another."
+            _poker_remove_player_from_all_tables_unlocked(data, lan_state, normalized_player, allow_in_hand=False)
+            break
+
+        if normalized_player in destination.get("players", []):
+            data["poker_lan"] = lan_state
+            _write_data_unlocked(data)
+            return True, "Already in this table."
+
+        seated_and_pending = len(destination.get("players", [])) + len(destination.get("pending_players", []))
+        if seated_and_pending >= int(destination.get("max_players", 6)):
+            return False, "Table is full."
+
+        if buy_in is None:
+            buy_in = destination.get("min_buy_in", POKER_LAN_DEFAULT_MIN_BUY_IN)
+        normalized_buy_in = _coerce_poker_currency(buy_in, destination.get("min_buy_in", 0.01))
+        if normalized_buy_in < float(destination.get("min_buy_in", 0.01)):
+            return False, f"Minimum buy-in is ${float(destination.get('min_buy_in', 0.01)):.2f}."
+        if normalized_buy_in > float(destination.get("max_buy_in", destination.get("min_buy_in", 0.01))):
+            return False, f"Maximum buy-in is ${float(destination.get('max_buy_in', 0.01)):.2f}."
+
+        account = data["accounts"].get(normalized_player, {})
+        balance = house_round_balance(account.get("balance", 0.0))
+        account_settings = _normalize_account_settings(account.get("settings", {}))
+        if (not bool(account_settings.get("allow_negative_balance", False))) and balance < normalized_buy_in:
+            return False, "Insufficient funds for buy-in."
+
+        account["balance"] = house_round_balance(balance - normalized_buy_in)
+
+        if bool(destination.get("in_progress")):
+            destination.setdefault("pending_players", []).append(normalized_player)
+            destination.setdefault("player_states", {})[normalized_player] = _normalize_poker_player_state(
+                {"stack_cents": int(round(normalized_buy_in * 100))}
+            )
+            _poker_lan_append_history(destination, f"{normalized_player} queued for next hand.")
+            data["poker_lan"] = lan_state
+            _write_data_unlocked(data)
+            return True, "Hand in progress. You are queued for next hand."
+
+        destination.setdefault("players", []).append(normalized_player)
+        destination.setdefault("player_states", {})[normalized_player] = _normalize_poker_player_state(
+            {"stack_cents": int(round(normalized_buy_in * 100))}
+        )
+        if not destination.get("host"):
+            destination["host"] = normalized_player
+        destination["phase"] = POKER_LAN_PHASE_WAITING
+        destination["last_updated_epoch"] = time.time()
+        _poker_lan_append_history(destination, f"{normalized_player} joined with ${normalized_buy_in:.2f}.")
+
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, f"Joined table {int(table_id)}."
+
+
+def leave_poker_lan_table(table_id, player_name):
+    if not isinstance(player_name, str) or not player_name.strip():
+        return False, "Invalid player."
+    normalized_player = player_name.strip()
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        table = _poker_lan_table_by_id(lan_state, table_id)
+        if table is None:
+            return False, "Table not found."
+
+        membership = _poker_lan_table_member_state(table, normalized_player)
+        if membership is None:
+            return True, "You are not in this table."
+        if membership == "player" and bool(table.get("in_progress")):
+            return False, "Cannot leave while a hand is in progress."
+
+        _poker_remove_player_from_all_tables_unlocked(data, lan_state, normalized_player, allow_in_hand=False)
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, f"Left table {int(table_id)}."
+
+
+def auto_remove_poker_lan_player(player_name):
+    if not isinstance(player_name, str) or not player_name.strip():
+        return False, "Invalid player."
+    normalized_player = player_name.strip()
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        removed = _poker_remove_player_from_all_tables_unlocked(data, lan_state, normalized_player, allow_in_hand=True)
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        if removed:
+            return True, "Player removed from poker multiplayer tables."
+        return True, "Player was not in poker multiplayer tables."
+
+
+def set_poker_lan_player_ready(table_id, player_name, ready=True):
+    if not isinstance(player_name, str) or not player_name.strip():
+        return False, "Invalid player.", False
+    normalized_player = player_name.strip()
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        table = _poker_lan_table_by_id(lan_state, table_id)
+        if table is None:
+            return False, "Table not found.", False
+        if normalized_player not in table.get("players", []):
+            return False, "Join this table first.", False
+        if bool(table.get("in_progress")):
+            return False, "Hand already in progress.", False
+
+        table.setdefault("player_states", {}).setdefault(normalized_player, _normalize_poker_player_state({}))
+        table["player_states"][normalized_player]["ready"] = bool(ready)
+        table["last_updated_epoch"] = time.time()
+
+        if not bool(ready):
+            table["phase"] = POKER_LAN_PHASE_WAITING
+            data["poker_lan"] = lan_state
+            _write_data_unlocked(data)
+            return True, "You are no longer ready.", False
+
+        seated_ready = [
+            name
+            for name in table.get("players", [])
+            if bool(table.get("player_states", {}).get(name, {}).get("ready", False))
+            and int(table.get("player_states", {}).get(name, {}).get("stack_cents", 0)) > 0
+        ]
+        seated_eligible = [
+            name
+            for name in table.get("players", [])
+            if int(table.get("player_states", {}).get(name, {}).get("stack_cents", 0)) > 0
+        ]
+
+        if len(seated_eligible) >= 2 and len(seated_ready) == len(seated_eligible):
+            start_index = int(table.get("dealer_index", 0))
+            start_stacks = [
+                (name, from_cents(int(table["player_states"][name]["stack_cents"]))) for name in seated_eligible
+            ]
+            hand_state, error = poker_create_hand(
+                start_stacks,
+                table.get("small_blind", POKER_LAN_DEFAULT_SMALL_BLIND),
+                table.get("big_blind", POKER_LAN_DEFAULT_BIG_BLIND),
+                dealer_index=max(0, min(start_index, len(start_stacks) - 1)),
+            )
+            if hand_state is None:
+                return False, error or "Failed to start hand.", False
+
+            table["round"] = int(table.get("round", 0)) + 1
+            table["phase"] = POKER_LAN_PHASE_IN_HAND
+            table["in_progress"] = True
+            table["hand_state"] = hand_state
+            table["turn_started_epoch"] = time.time()
+            table["hand_start_stacks"] = {
+                player["name"]: int(player.get("stack", 0)) + int(player.get("committed_total", 0))
+                for player in hand_state.get("players", [])
+            }
+            table["dealer_index"] = (int(table.get("dealer_index", 0)) + 1) % max(1, len(seated_eligible))
+            for name in table.get("players", []):
+                table.setdefault("player_states", {}).setdefault(name, _normalize_poker_player_state({}))
+                table["player_states"][name]["ready"] = False
+            _poker_lan_append_history(table, f"Round {table['round']} started.")
+            data["poker_lan"] = lan_state
+            _write_data_unlocked(data)
+            return True, f"Round {table['round']} started.", True
+
+        data["poker_lan"] = lan_state
+        _write_data_unlocked(data)
+        return True, "You are ready.", False
+
+
+def poker_lan_player_action(table_id, player_name, action, amount=None):
+    if not isinstance(player_name, str) or not player_name.strip():
+        return False, "Invalid player."
+    normalized_player = player_name.strip()
+    with _accounts_write_lock():
+        data = _load_data_for_write_unlocked()
+        lan_state = _normalize_poker_lan_state(data.get("poker_lan", {}))
+        table = _poker_lan_table_by_id(lan_state, table_id)
+        if table is None:
+            return False, "Table not found."
+        if not bool(table.get("in_progress")):
+            return False, "No active hand."
+        hand_state = table.get("hand_state")
+        if not isinstance(hand_state, dict):
+            return False, "Hand state unavailable."
+
+        legal = poker_legal_actions(hand_state, normalized_player)
+        if not legal.get("actions"):
+            return False, "You cannot act right now."
+
+        ok, message = poker_apply_action(hand_state, normalized_player, action, amount)
+        if not ok:
+            return False, message
+
+        table["hand_state"] = hand_state
+        table["turn_started_epoch"] = time.time()
+        _poker_lan_append_history(table, f"{normalized_player}: {str(action).lower()}")
+
+        if hand_state.get("street") == "finished":
+            _poker_finalize_finished_hand_unlocked(data, table)
+
+        data["poker_lan"] = lan_state
         _write_data_unlocked(data)
         return True, "Action submitted."

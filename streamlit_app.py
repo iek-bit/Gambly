@@ -12,18 +12,28 @@ import streamlit.components.v1 as components
 import base64
 from gameplay import calculate_payout
 from money_utils import format_money, house_round_charge, house_round_credit
+from poker_bots import choose_bot_action
+from poker_engine import apply_action as poker_apply_action
+from poker_engine import create_hand as poker_create_hand
+from poker_engine import legal_actions as poker_legal_actions
+from poker_engine import state_to_public as poker_state_to_public
 
 from storage import (
     add_account_value,
     acquire_account_session,
     auto_remove_blackjack_lan_player,
+    auto_remove_poker_lan_player,
     blackjack_lan_player_action,
     can_spectate_blackjack_lan_table,
+    can_spectate_poker_lan_table,
     create_blackjack_lan_table,
+    create_poker_lan_table,
     create_account_record,
     delete_blackjack_lan_table,
+    delete_poker_lan_table,
     delete_account,
     find_blackjack_lan_table_for_player,
+    find_poker_lan_table_for_player,
     force_acquire_account_session,
     get_account_admin_status,
     get_account_stats,
@@ -34,23 +44,31 @@ from storage import (
     get_account_value,
     get_blackjack_lan_settings,
     get_blackjack_lan_tables,
+    get_poker_lan_settings,
+    get_poker_lan_tables,
     is_reserved_account_name,
     join_blackjack_lan_table,
+    join_poker_lan_table,
     leave_blackjack_lan_table,
+    leave_poker_lan_table,
     list_account_names,
     load_game_limits,
     load_saved_odds,
+    poker_lan_player_action,
     record_game_result,
     save_game_limits,
     save_odds,
     set_blackjack_lan_player_ready,
     set_blackjack_lan_player_bet,
+    set_poker_lan_player_ready,
     set_account_admin_status,
     set_account_settings,
     set_account_value,
     set_account_password,
     update_blackjack_lan_global_settings,
     update_blackjack_lan_table_settings,
+    update_poker_lan_global_settings,
+    update_poker_lan_table_settings,
     release_account_session,
 )
 
@@ -63,6 +81,7 @@ STAT_SCOPE_OPTIONS = {
     "Number guessing (you guess)": "player_guess",
     "Number guessing (computer guesses)": "computer_guess",
     "Blackjack": "blackjack",
+    "Poker": "poker",
 }
 AVATAR_OPTIONS = [
     ("fox", "🦊", "Fox", "animal wild clever"),
@@ -1269,6 +1288,14 @@ def init_state():
     st.session_state.setdefault("blackjack_pending_bet", None)
     st.session_state.setdefault("blackjack_pending_replay_bet", None)
     st.session_state.setdefault("blackjack_guest_total_net", 0.0)
+    st.session_state.setdefault("poker_mode_select", "Single Player")
+    st.session_state.setdefault("poker_single_setup", None)
+    st.session_state.setdefault("poker_single_state", None)
+    st.session_state.setdefault("poker_lan_spectate_table_id", None)
+    st.session_state.setdefault("poker_lan_spectate_password", "")
+    st.session_state.setdefault("poker_lan_create_menu_open", False)
+    st.session_state.setdefault("poker_lan_create_notice", None)
+    st.session_state.setdefault("poker_lan_local_message", None)
     st.session_state.setdefault("setting_allow_negative_balance", False)
     st.session_state.setdefault("setting_dark_mode", True)
     st.session_state.setdefault("setting_enable_animations", True)
@@ -1300,6 +1327,10 @@ def _sign_out_current_account(session_notice=None):
         except Exception:
             pass
         try:
+            auto_remove_poker_lan_player(account)
+        except Exception:
+            pass
+        try:
             release_account_session(account, _current_session_id())
         except Exception:
             pass
@@ -1316,6 +1347,8 @@ def _sign_out_current_account(session_notice=None):
     st.session_state["pending_force_sign_in_account"] = None
     st.session_state["blackjack_lan_spectate_table_id"] = None
     st.session_state["blackjack_lan_spectate_password"] = ""
+    st.session_state["poker_lan_spectate_table_id"] = None
+    st.session_state["poker_lan_spectate_password"] = ""
     end_guest_session(set_completion_message=False)
     if session_notice:
         st.session_state["account_session_notice"] = session_notice
@@ -1329,6 +1362,10 @@ def _remove_active_multiplayer_presence():
             continue
         try:
             auto_remove_blackjack_lan_player(player_name)
+        except Exception:
+            pass
+        try:
+            auto_remove_poker_lan_player(player_name)
         except Exception:
             pass
 
@@ -1377,13 +1414,15 @@ def _auto_remove_lan_player_when_not_in_blackjack():
     active_player = current_account or guest_multiplayer_account
     if not active_player:
         return
-    if st.session_state.get("active_action") == "Blackjack" and not st.session_state.get("show_auth_flow", False):
+    if st.session_state.get("active_action") in {"Blackjack", "Poker"} and not st.session_state.get("show_auth_flow", False):
         return
     joined_table = find_blackjack_lan_table_for_player(active_player)
-    if joined_table is None:
-        return
-    auto_remove_blackjack_lan_player(active_player)
-    _invalidate_blackjack_lan_ui_caches()
+    if joined_table is not None:
+        auto_remove_blackjack_lan_player(active_player)
+        _invalidate_blackjack_lan_ui_caches()
+    joined_poker_table = find_poker_lan_table_for_player(active_player)
+    if joined_poker_table is not None:
+        auto_remove_poker_lan_player(active_player)
 
 
 def _clear_blackjack_multiplayer_guest_account(delete_record=True):
@@ -4766,6 +4805,387 @@ def blackjack_ui():
         return
 
 
+def _poker_sync_single_player_stacks(round_state):
+    for player in round_state.get("hand_state", {}).get("players", []):
+        name = player.get("name")
+        if not name:
+            continue
+        round_state.setdefault("stacks", {})[name] = float(player.get("stack", 0)) / 100.0
+
+
+def _poker_single_player_run_bots(round_state):
+    hand_state = round_state.get("hand_state")
+    if not isinstance(hand_state, dict):
+        return
+    while hand_state.get("street") != "finished":
+        acting_index = hand_state.get("acting_index")
+        if acting_index is None or acting_index >= len(hand_state.get("players", [])):
+            break
+        acting_player = hand_state["players"][acting_index].get("name")
+        if acting_player == "You":
+            break
+        legal = poker_legal_actions(hand_state, acting_player)
+        action, amount = choose_bot_action(hand_state, acting_player, legal)
+        ok, _ = poker_apply_action(hand_state, acting_player, action, amount)
+        if not ok:
+            poker_apply_action(hand_state, acting_player, "fold")
+            break
+
+
+def _poker_single_record_net(account, net_delta):
+    if abs(float(net_delta)) < 0.0001:
+        return
+    if st.session_state.get("guest_mode_active", False):
+        st.session_state["guest_balance"] = float(st.session_state.get("guest_balance", 0.0)) + float(net_delta)
+        return
+    if account:
+        add_account_value(account, float(net_delta))
+
+
+def render_poker_single_player(account):
+    round_state = st.session_state.get("poker_single_state")
+    if not isinstance(round_state, dict):
+        with st.form("poker_single_setup_form"):
+            num_bots = st.number_input("Number of bots", min_value=2, max_value=5, value=3, step=1)
+            starting_stack = st.number_input("Starting stack ($)", min_value=20.0, value=200.0, step=10.0, format="%.2f")
+            small_blind = st.number_input("Small blind ($)", min_value=0.01, value=1.0, step=0.5, format="%.2f")
+            big_blind = st.number_input("Big blind ($)", min_value=float(small_blind), value=2.0, step=0.5, format="%.2f")
+            submitted = st.form_submit_button("Start single-player poker")
+        if not submitted:
+            return
+        stacks = {"You": float(starting_stack)}
+        for idx in range(1, int(num_bots) + 1):
+            stacks[f"Bot {idx}"] = float(starting_stack)
+        st.session_state["poker_single_state"] = {
+            "stacks": stacks,
+            "dealer_index": 0,
+            "small_blind": float(small_blind),
+            "big_blind": float(big_blind),
+            "hand_state": None,
+            "hand_start_hero_stack": float(starting_stack),
+            "last_hand_recorded": True,
+        }
+        _fast_rerun(force=True)
+        return
+
+    if round_state.get("hand_state") is None:
+        alive = [(name, float(stack)) for name, stack in round_state.get("stacks", {}).items() if float(stack) > 0]
+        if len(alive) < 2:
+            st.info("Not enough players with chips. Reset to continue.")
+            if st.button("Reset poker session", key="poker_single_reset", use_container_width=True):
+                st.session_state["poker_single_state"] = None
+                _fast_rerun(force=True)
+            return
+        if st.button("Deal next hand", key="poker_single_deal", use_container_width=True):
+            hand_state, error = poker_create_hand(
+                alive,
+                round_state.get("small_blind", 1.0),
+                round_state.get("big_blind", 2.0),
+                dealer_index=int(round_state.get("dealer_index", 0)) % len(alive),
+            )
+            if hand_state is None:
+                st.error(error or "Unable to start hand.")
+                return
+            round_state["hand_state"] = hand_state
+            round_state["hand_start_hero_stack"] = float(round_state.get("stacks", {}).get("You", 0.0))
+            round_state["last_hand_recorded"] = False
+            round_state["dealer_index"] = (int(round_state.get("dealer_index", 0)) + 1) % len(alive)
+            _poker_single_player_run_bots(round_state)
+            st.session_state["poker_single_state"] = round_state
+            _fast_rerun(force=True)
+        st.markdown("### Stacks")
+        for name, amount in sorted(round_state.get("stacks", {}).items()):
+            st.write(f"- {name}: ${format_money(amount)}")
+        return
+
+    hand_state = round_state.get("hand_state")
+    _poker_single_player_run_bots(round_state)
+    hand_state = round_state.get("hand_state")
+    public = poker_state_to_public(hand_state, viewer_name="You", reveal_all=hand_state.get("street") == "finished")
+    st.caption(
+        f"Street: {public['street'].title()} | Pot: ${format_money(public['pot'])} | Current bet: ${format_money(public['current_bet'])}"
+    )
+    st.write(f"Board: {' '.join(public.get('board', [])) or '-'}")
+    for player in public.get("players", []):
+        turn_badge = " (TURN)" if public.get("acting_player") == player["name"] else ""
+        st.write(
+            f"{player['name']}{turn_badge} | Stack ${format_money(player['stack'])} | Cards: {' '.join(player['hole'])}"
+        )
+
+    if hand_state.get("street") != "finished":
+        legal = poker_legal_actions(hand_state, "You")
+        actions = legal.get("actions", [])
+        if not actions:
+            st.info("Waiting for bot actions...")
+            _poker_single_player_run_bots(round_state)
+            st.session_state["poker_single_state"] = round_state
+            _fast_rerun(force=True)
+            return
+        bet_amount = None
+        raise_amount = None
+        if "bet" in actions:
+            bet_amount = st.number_input(
+                "Bet size ($)",
+                min_value=float(legal.get("min_bet", 0.01)),
+                max_value=float(legal.get("max_bet", legal.get("min_bet", 0.01))),
+                value=float(legal.get("min_bet", 0.01)),
+                step=0.5,
+                format="%.2f",
+                key="poker_single_bet_amount",
+            )
+        if "raise" in actions:
+            raise_amount = st.number_input(
+                "Raise to ($)",
+                min_value=float(legal.get("min_raise_to", 0.01)),
+                max_value=float(legal.get("max_raise_to", legal.get("min_raise_to", 0.01))),
+                value=float(legal.get("min_raise_to", 0.01)),
+                step=0.5,
+                format="%.2f",
+                key="poker_single_raise_amount",
+            )
+        cols = st.columns(min(5, len(actions)))
+        for idx, action_name in enumerate(actions):
+            if cols[idx].button(action_name.upper(), key=f"poker_single_action_{action_name}", use_container_width=True):
+                amount = bet_amount if action_name == "bet" else raise_amount if action_name == "raise" else None
+                ok, message = poker_apply_action(hand_state, "You", action_name, amount)
+                if not ok:
+                    st.error(message)
+                _poker_single_player_run_bots(round_state)
+                st.session_state["poker_single_state"] = round_state
+                _fast_rerun(force=True)
+        return
+
+    _poker_sync_single_player_stacks(round_state)
+    hero_stack = float(round_state.get("stacks", {}).get("You", 0.0))
+    start_stack = float(round_state.get("hand_start_hero_stack", hero_stack))
+    hand_delta = hero_stack - start_stack
+    if not bool(round_state.get("last_hand_recorded", False)):
+        _poker_single_record_net(account, hand_delta)
+        if account:
+            record_game_result(account, max(0.0, -hand_delta), max(0.0, hand_delta), hand_delta > 0, "poker")
+        round_state["last_hand_recorded"] = True
+    st.success(f"Hand complete. Net: ${format_money(hand_delta)}")
+    if st.button("Next hand", key="poker_single_next_hand", use_container_width=True):
+        round_state["hand_state"] = None
+        st.session_state["poker_single_state"] = round_state
+        _fast_rerun(force=True)
+
+
+def render_poker_multiplayer(account):
+    if not account:
+        st.warning("Sign in to play multiplayer poker.")
+        return
+    tables = get_poker_lan_tables()
+    settings = get_poker_lan_settings()
+    joined_table = find_poker_lan_table_for_player(account)
+    spectate_table_id = st.session_state.get("poker_lan_spectate_table_id")
+    spectate_password = st.session_state.get("poker_lan_spectate_password", "")
+
+    if joined_table is None and spectate_table_id is None:
+        if st.button("Create table", key="poker_create_open", use_container_width=True):
+            st.session_state["poker_lan_create_menu_open"] = not bool(st.session_state.get("poker_lan_create_menu_open", False))
+            _fast_rerun(force=True)
+        if st.session_state.get("poker_lan_create_menu_open", False):
+            with st.form("poker_create_form"):
+                name = st.text_input("Table name", value="")
+                max_players = st.number_input("Max players", min_value=2, max_value=6, value=int(settings.get("default_max_players", 6)))
+                min_buy_in = st.number_input("Min buy-in ($)", min_value=1.0, value=float(settings.get("default_min_buy_in", 40.0)), format="%.2f")
+                max_buy_in = st.number_input("Max buy-in ($)", min_value=float(min_buy_in), value=float(settings.get("default_max_buy_in", 400.0)), format="%.2f")
+                small_blind = st.number_input("Small blind ($)", min_value=0.01, value=float(settings.get("default_small_blind", 1.0)), format="%.2f")
+                big_blind = st.number_input("Big blind ($)", min_value=float(small_blind), value=float(settings.get("default_big_blind", 2.0)), format="%.2f")
+                is_private = st.checkbox("Private table", value=False)
+                password = st.text_input("Password", value="", type="password")
+                submit = st.form_submit_button("Create")
+            if submit:
+                ok, message = create_poker_lan_table(
+                    table_name=name,
+                    max_players=max_players,
+                    min_buy_in=min_buy_in,
+                    max_buy_in=max_buy_in,
+                    small_blind=small_blind,
+                    big_blind=big_blind,
+                    is_private=is_private,
+                    password=password,
+                )
+                if ok:
+                    st.success(message)
+                    st.session_state["poker_lan_create_menu_open"] = False
+                else:
+                    st.error(message)
+                _fast_rerun(force=True)
+        st.markdown("---")
+        for table in tables:
+            table_id = int(table.get("id", 0))
+            st.markdown(
+                f"**{table.get('name', f'Table {table_id}')}** | "
+                f"{len(table.get('players', []))}/{int(table.get('max_players', 6))} players | "
+                f"Blinds ${format_money(table.get('small_blind', 1.0))}/${format_money(table.get('big_blind', 2.0))}"
+            )
+            password = ""
+            if bool(table.get("is_private", False)):
+                password = st.text_input("Table password", value="", type="password", key=f"poker_pw_{table_id}")
+            buy_in = st.number_input(
+                "Buy-in ($)",
+                min_value=float(table.get("min_buy_in", 1.0)),
+                max_value=float(table.get("max_buy_in", table.get("min_buy_in", 1.0))),
+                value=float(table.get("min_buy_in", 1.0)),
+                format="%.2f",
+                key=f"poker_buyin_{table_id}",
+            )
+            col1, col2 = st.columns(2)
+            if col1.button("Join", key=f"poker_join_{table_id}", use_container_width=True):
+                ok, message = join_poker_lan_table(table_id, account, password=password, buy_in=buy_in)
+                if ok:
+                    st.success(message)
+                else:
+                    st.error(message)
+                _fast_rerun(force=True)
+            if col2.button("Spectate", key=f"poker_spec_{table_id}", use_container_width=True):
+                allowed, message = can_spectate_poker_lan_table(table_id, password=password)
+                if allowed:
+                    st.session_state["poker_lan_spectate_table_id"] = table_id
+                    st.session_state["poker_lan_spectate_password"] = password
+                else:
+                    st.error(message)
+                _fast_rerun(force=True)
+        return
+
+    table_to_view = joined_table
+    is_spectator = False
+    if table_to_view is None and spectate_table_id is not None:
+        allowed, message = can_spectate_poker_lan_table(spectate_table_id, spectate_password)
+        if not allowed:
+            st.error(message)
+            st.session_state["poker_lan_spectate_table_id"] = None
+            st.session_state["poker_lan_spectate_password"] = ""
+            _fast_rerun(force=True)
+            return
+        table_to_view = next(
+            (entry for entry in get_poker_lan_tables() if int(entry.get("id", -1)) == int(spectate_table_id)),
+            None,
+        )
+        is_spectator = True
+    if table_to_view is None:
+        st.warning("Table not found.")
+        return
+
+    table_id = int(table_to_view.get("id", 0))
+    st.markdown(f"### {table_to_view.get('name', f'Poker Table {table_id}')}")
+    if not is_spectator:
+        if st.button("Leave table", key=f"poker_leave_{table_id}", use_container_width=True):
+            ok, message = leave_poker_lan_table(table_id, account)
+            if ok:
+                st.success(message)
+            else:
+                st.error(message)
+            _fast_rerun(force=True)
+    else:
+        if st.button("Stop spectating", key=f"poker_spec_stop_{table_id}", use_container_width=True):
+            st.session_state["poker_lan_spectate_table_id"] = None
+            st.session_state["poker_lan_spectate_password"] = ""
+            _fast_rerun(force=True)
+
+    if not bool(table_to_view.get("in_progress", False)):
+        if (not is_spectator) and account in table_to_view.get("players", []):
+            ready_now = bool(table_to_view.get("player_states", {}).get(account, {}).get("ready", False))
+            if st.button("Set ready" if not ready_now else "Set not ready", key=f"poker_ready_{table_id}", use_container_width=True):
+                ok, message, started = set_poker_lan_player_ready(table_id, account, ready=not ready_now)
+                if ok:
+                    st.success(message)
+                else:
+                    st.error(message)
+                if started:
+                    st.info("Hand started.")
+                _fast_rerun(force=True)
+        for name, player_state in table_to_view.get("player_states", {}).items():
+            stack = float(player_state.get("stack_cents", 0)) / 100.0
+            ready = "Ready" if bool(player_state.get("ready", False)) else "Waiting"
+            st.write(f"- {name}: ${format_money(stack)} | {ready}")
+        return
+
+    hand_state = table_to_view.get("hand_state")
+    if not isinstance(hand_state, dict):
+        st.warning("Hand state unavailable.")
+        return
+    public = poker_state_to_public(
+        hand_state,
+        viewer_name=account,
+        reveal_all=bool(is_spectator or hand_state.get("street") == "finished"),
+    )
+    st.caption(
+        f"Street: {public['street'].title()} | Pot ${format_money(public['pot'])} | Current bet ${format_money(public['current_bet'])}"
+    )
+    st.write(f"Board: {' '.join(public.get('board', [])) or '-'}")
+    for player in public.get("players", []):
+        turn_badge = " (TURN)" if public.get("acting_player") == player["name"] else ""
+        st.write(
+            f"{player['name']}{turn_badge} | Stack ${format_money(player['stack'])} | Cards {' '.join(player['hole'])}"
+        )
+    if (not is_spectator) and hand_state.get("street") != "finished":
+        legal = poker_legal_actions(hand_state, account)
+        actions = legal.get("actions", [])
+        if actions:
+            bet_amount = None
+            raise_amount = None
+            if "bet" in actions:
+                bet_amount = st.number_input(
+                    "Bet size ($)",
+                    min_value=float(legal.get("min_bet", 0.01)),
+                    max_value=float(legal.get("max_bet", legal.get("min_bet", 0.01))),
+                    value=float(legal.get("min_bet", 0.01)),
+                    step=0.5,
+                    format="%.2f",
+                    key=f"poker_lan_bet_{table_id}_{account}",
+                )
+            if "raise" in actions:
+                raise_amount = st.number_input(
+                    "Raise to ($)",
+                    min_value=float(legal.get("min_raise_to", 0.01)),
+                    max_value=float(legal.get("max_raise_to", legal.get("min_raise_to", 0.01))),
+                    value=float(legal.get("min_raise_to", 0.01)),
+                    step=0.5,
+                    format="%.2f",
+                    key=f"poker_lan_raise_{table_id}_{account}",
+                )
+            cols = st.columns(min(len(actions), 5))
+            for idx, action_name in enumerate(actions):
+                if cols[idx].button(action_name.upper(), key=f"poker_lan_action_{table_id}_{account}_{action_name}", use_container_width=True):
+                    amount = bet_amount if action_name == "bet" else raise_amount if action_name == "raise" else None
+                    ok, message = poker_lan_player_action(table_id, account, action_name, amount)
+                    if ok:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                    _fast_rerun(force=True)
+
+    table_signature = (
+        int(table_to_view.get("round", 0)),
+        str(table_to_view.get("phase", "")),
+        str(public.get("street", "")),
+        str(public.get("acting_player", "")),
+    )
+    interval_ms = _adaptive_refresh_interval_ms(
+        state_key=f"poker_lan_sync_state_{table_id}",
+        signature=table_signature,
+        base_ms=1200,
+        min_ms=800,
+        max_ms=2600,
+        ramp_step_ms=180,
+        ramp_limit=8,
+    )
+    _schedule_non_blocking_rerun(interval_ms, key=f"poker_lan_autorefresh_{table_id}", allow_blocking_fallback=False)
+
+
+def poker_ui():
+    st.subheader("Poker (Texas Hold'em)")
+    mode = st.radio("Mode", ["Single Player", "Multiplayer"], horizontal=True, key="poker_mode_select")
+    account = st.session_state.get("current_account")
+    if mode == "Single Player":
+        render_poker_single_player(account)
+        return
+    render_poker_multiplayer(account)
+
+
 def developer_ui():
     if not is_admin_user():
         st.error("Only the admin account can access this option.")
@@ -5197,6 +5617,13 @@ def home_ui():
             reset_guest_setup=True,
         )
         _home_action_button(
+            "Poker",
+            "Poker",
+            "home_poker",
+            "home_card_poker",
+            reset_guest_setup=True,
+        )
+        _home_action_button(
             "Leaderboards",
             "Leaderboards",
             "home_leaderboards",
@@ -5278,7 +5705,7 @@ def main():
     _render_storage_unavailable_notice()
     if (
         st.session_state.get("guest_mode_active", False)
-        and st.session_state.get("active_action") not in {"Play game", "Blackjack"}
+        and st.session_state.get("active_action") not in {"Play game", "Blackjack", "Poker"}
     ):
         end_guest_session(set_completion_message=True)
     if st.session_state["redirect_to_home"]:
@@ -5291,6 +5718,7 @@ def main():
         "Calculate odds",
         "Play game",
         "Blackjack",
+        "Poker",
         "Change profile picture",
         "Change password",
         "Leaderboards",
@@ -5350,6 +5778,8 @@ def main():
         play_game_ui()
     elif st.session_state["active_action"] == "Blackjack":
         blackjack_ui()
+    elif st.session_state["active_action"] == "Poker":
+        poker_ui()
     elif st.session_state["active_action"] == "House odds":
         developer_ui()
     elif st.session_state["active_action"] == "Game limits":
