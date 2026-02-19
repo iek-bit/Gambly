@@ -1298,11 +1298,13 @@ def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, 
             table["last_updated_epoch"] = time.time()
             continue
 
-        stack_cents = int(table.get("player_states", {}).get(player_name, {}).get("stack_cents", 0))
-        if stack_cents > 0 and player_name in data.get("accounts", {}):
-            data["accounts"][player_name]["balance"] = house_round_balance(
-                data["accounts"][player_name].get("balance", 0.0) + from_cents(stack_cents)
-            )
+        try:
+            stack_cents = int(table.get("player_states", {}).get(player_name, {}).get("stack_cents", 0))
+        except (TypeError, ValueError):
+            stack_cents = 0
+        account = data.get("accounts", {}).get(player_name)
+        if stack_cents > 0 and isinstance(account, dict):
+            account["balance"] = house_round_balance(account.get("balance", 0.0) + from_cents(stack_cents))
 
         table["players"] = [name for name in table.get("players", []) if name != player_name]
         table.get("player_states", {}).pop(player_name, None)
