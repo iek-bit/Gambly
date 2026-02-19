@@ -438,11 +438,6 @@ def _fragment_or_passthrough(func):
     return func
 
 
-def _run_ui_fragment(func, *args, **kwargs):
-    fragment_callable = _fragment_or_passthrough(func)
-    return fragment_callable(*args, **kwargs)
-
-
 def _fast_rerun(force=False):
     rerun_func = getattr(st, "rerun", None)
     if not callable(rerun_func):
@@ -2839,9 +2834,9 @@ def play_game_ui():
         return
 
     if selected_mode == "You guess the number":
-        _run_ui_fragment(player_guesses_game_ui, account, is_guest_mode)
+        player_guesses_game_ui(account, is_guest_mode)
     else:
-        _run_ui_fragment(computer_guesses_game_ui, account, is_guest_mode)
+        computer_guesses_game_ui(account, is_guest_mode)
 
     if is_guest_mode:
         guest_balance = float(st.session_state.get("guest_balance", 0.0))
@@ -4073,7 +4068,7 @@ def blackjack_ui():
     st.markdown(f"<div style='margin-top: 0.5rem; font-weight: bold; color: var(--text-color);'>Current mode: <span style='color: var(--primary-color);'>{mode}</span></div>", unsafe_allow_html=True)
 
     if mode == "Single Player":
-        _run_ui_fragment(render_blackjack_single_player_mode, account, guest_mode_active)
+        render_blackjack_single_player_mode(account, guest_mode_active)
         return
     elif mode == "Multiplayer":
         st.markdown("### Multiplayer Tables")
@@ -5332,35 +5327,35 @@ def main():
     render_back_button()
 
     if st.session_state["show_auth_flow"]:
-        _run_ui_fragment(auth_ui)
+        auth_ui()
     elif st.session_state["active_action"] == "Home":
-        _run_ui_fragment(home_ui)
+        home_ui()
 
     if st.session_state["show_auth_flow"]:
         return
 
     if st.session_state["active_action"] == "Look up account":
-        _run_ui_fragment(lookup_account_ui)
+        lookup_account_ui()
     elif st.session_state["active_action"] == "Add/withdraw money":
-        _run_ui_fragment(add_withdraw_ui)
+        add_withdraw_ui()
     elif st.session_state["active_action"] == "Calculate odds":
-        _run_ui_fragment(odds_calculator_ui)
+        odds_calculator_ui()
     elif st.session_state["active_action"] == "Change profile picture":
-        _run_ui_fragment(change_profile_picture_ui)
+        change_profile_picture_ui()
     elif st.session_state["active_action"] == "Change password":
-        _run_ui_fragment(change_password_ui)
+        change_password_ui()
     elif st.session_state["active_action"] == "Leaderboards":
-        _run_ui_fragment(leaderboards_ui)
+        leaderboards_ui()
     elif st.session_state["active_action"] == "Play game":
-        _run_ui_fragment(play_game_ui)
+        play_game_ui()
     elif st.session_state["active_action"] == "Blackjack":
-        _run_ui_fragment(blackjack_ui)
+        blackjack_ui()
     elif st.session_state["active_action"] == "House odds":
-        _run_ui_fragment(developer_ui)
+        developer_ui()
     elif st.session_state["active_action"] == "Game limits":
-        _run_ui_fragment(game_limits_ui)
+        game_limits_ui()
     elif st.session_state["active_action"] == "Account tools":
-        _run_ui_fragment(admin_account_tools_ui)
+        admin_account_tools_ui()
 
 
 if __name__ == "__main__":
