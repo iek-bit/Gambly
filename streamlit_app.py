@@ -5487,6 +5487,13 @@ def render_poker_multiplayer(account):
                 max_buy_in = st.number_input("Max buy-in ($)", min_value=float(min_buy_in), value=float(settings.get("default_max_buy_in", 400.0)), format="%.2f")
                 small_blind = st.number_input("Small blind ($)", min_value=0.01, value=float(settings.get("default_small_blind", 1.0)), format="%.2f")
                 big_blind = st.number_input("Big blind ($)", min_value=float(small_blind), value=float(settings.get("default_big_blind", 2.0)), format="%.2f")
+                min_raise = st.number_input(
+                    "Minimum raise increment ($)",
+                    min_value=0.01,
+                    value=float(settings.get("default_min_raise", 0.01)),
+                    step=0.01,
+                    format="%.2f",
+                )
                 is_private = st.checkbox("Private table", value=False)
                 password = st.text_input("Password", value="", type="password")
                 submit = st.form_submit_button("Create")
@@ -5498,6 +5505,7 @@ def render_poker_multiplayer(account):
                     max_buy_in=max_buy_in,
                     small_blind=small_blind,
                     big_blind=big_blind,
+                    min_raise=min_raise,
                     is_private=is_private,
                     password=password,
                 )
@@ -5508,13 +5516,31 @@ def render_poker_multiplayer(account):
                     st.error(message)
                 _invalidate_poker_lan_ui_caches()
                 _fast_rerun(force=True)
+        if is_admin_user():
+            if st.button("Delete all poker tables", key="poker_delete_all_tables", use_container_width=True):
+                deleted_count = 0
+                failed_count = 0
+                for table in list(tables):
+                    table_id = int(table.get("id", 0))
+                    deleted, _message = delete_poker_lan_table(table_id)
+                    if deleted:
+                        deleted_count += 1
+                    else:
+                        failed_count += 1
+                _invalidate_poker_lan_ui_caches()
+                if deleted_count > 0:
+                    st.success(f"Deleted {deleted_count} table(s).")
+                if failed_count > 0:
+                    st.warning(f"{failed_count} table(s) could not be deleted (likely active or occupied).")
+                _fast_rerun(force=True)
         st.markdown("---")
         for table in tables:
             table_id = int(table.get("id", 0))
             st.markdown(
                 f"**{table.get('name', f'Table {table_id}')}** | "
                 f"{len(table.get('players', []))}/{int(table.get('max_players', 6))} players | "
-                f"Blinds ${format_money(table.get('small_blind', 1.0))}/${format_money(table.get('big_blind', 2.0))}"
+                f"Blinds ${format_money(table.get('small_blind', 1.0))}/${format_money(table.get('big_blind', 2.0))} | "
+                f"Min raise ${format_money(table.get('min_raise', 0.01))}"
             )
             password = ""
             if bool(table.get("is_private", False)):
@@ -5527,7 +5553,11 @@ def render_poker_multiplayer(account):
                 format="%.2f",
                 key=f"poker_buyin_{table_id}",
             )
-            col1, col2 = st.columns(2)
+            if is_admin_user():
+                col1, col2, col3 = st.columns(3)
+            else:
+                col1, col2 = st.columns(2)
+                col3 = None
             if col1.button("Join", key=f"poker_join_{table_id}", use_container_width=True):
                 ok, message = join_poker_lan_table(table_id, account, password=password, buy_in=buy_in)
                 if ok:
@@ -5543,6 +5573,14 @@ def render_poker_multiplayer(account):
                     st.session_state["poker_lan_spectate_password"] = password
                 else:
                     st.error(message)
+                _fast_rerun(force=True)
+            if col3 is not None and col3.button("Delete", key=f"poker_delete_{table_id}", use_container_width=True):
+                deleted, message = delete_poker_lan_table(table_id)
+                if deleted:
+                    st.success(message)
+                else:
+                    st.error(message)
+                _invalidate_poker_lan_ui_caches()
                 _fast_rerun(force=True)
         st.markdown("---")
         if st.button("Refresh table", key="poker_lan_refresh_table_lobby", use_container_width=True):

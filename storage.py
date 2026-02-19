@@ -2663,12 +2663,13 @@ def blackjack_lan_player_action(table_id, player_name, action):
         return True, "Action submitted."
 
 
-POKER_LAN_DEFAULT_TABLE_COUNT = 3
+POKER_LAN_DEFAULT_TABLE_COUNT = 0
 POKER_LAN_DEFAULT_MAX_PLAYERS = 6
 POKER_LAN_DEFAULT_MIN_BUY_IN = 40.0
 POKER_LAN_DEFAULT_MAX_BUY_IN = 400.0
 POKER_LAN_DEFAULT_SMALL_BLIND = 1.0
 POKER_LAN_DEFAULT_BIG_BLIND = 2.0
+POKER_LAN_DEFAULT_MIN_RAISE = 0.01
 POKER_LAN_DEFAULT_TURN_TIMEOUT_SECONDS = 30
 POKER_LAN_PHASE_WAITING = "waiting_ready"
 POKER_LAN_PHASE_IN_HAND = "in_hand"
@@ -2682,6 +2683,7 @@ def _default_poker_lan_settings():
         "default_max_buy_in": POKER_LAN_DEFAULT_MAX_BUY_IN,
         "default_small_blind": POKER_LAN_DEFAULT_SMALL_BLIND,
         "default_big_blind": POKER_LAN_DEFAULT_BIG_BLIND,
+        "default_min_raise": POKER_LAN_DEFAULT_MIN_RAISE,
         "allow_spectators_by_default": True,
         "turn_timeout_seconds": POKER_LAN_DEFAULT_TURN_TIMEOUT_SECONDS,
     }
@@ -2733,6 +2735,10 @@ def _normalize_poker_lan_settings(raw_settings):
         settings["default_small_blind"],
         _coerce_poker_currency(raw_settings.get("default_big_blind", settings["default_big_blind"]), settings["default_big_blind"]),
     )
+    settings["default_min_raise"] = max(
+        0.01,
+        _coerce_poker_currency(raw_settings.get("default_min_raise", settings["default_min_raise"]), settings["default_min_raise"]),
+    )
     settings["allow_spectators_by_default"] = bool(
         raw_settings.get("allow_spectators_by_default", settings["allow_spectators_by_default"])
     )
@@ -2763,6 +2769,7 @@ def _default_poker_lan_table(table_id, settings=None):
         "max_buy_in": float(normalized_settings["default_max_buy_in"]),
         "small_blind": float(normalized_settings["default_small_blind"]),
         "big_blind": float(normalized_settings["default_big_blind"]),
+        "min_raise": float(normalized_settings["default_min_raise"]),
         "allow_spectators": bool(normalized_settings["allow_spectators_by_default"]),
         "spectators_require_password": False,
         "is_private": False,
@@ -2830,6 +2837,10 @@ def _normalize_poker_lan_table(raw_table, fallback_id, settings=None):
     table["big_blind"] = max(
         table["small_blind"],
         _coerce_poker_currency(raw_table.get("big_blind", table["big_blind"]), table["big_blind"]),
+    )
+    table["min_raise"] = max(
+        0.01,
+        _coerce_poker_currency(raw_table.get("min_raise", table["min_raise"]), table["min_raise"]),
     )
     table["allow_spectators"] = bool(raw_table.get("allow_spectators", table["allow_spectators"]))
     table["spectators_require_password"] = bool(
@@ -3100,6 +3111,7 @@ def create_poker_lan_table(
     max_buy_in=None,
     small_blind=None,
     big_blind=None,
+    min_raise=None,
     allow_spectators=None,
     spectators_require_password=None,
     is_private=None,
@@ -3128,6 +3140,8 @@ def create_poker_lan_table(
             table["small_blind"] = max(0.01, _coerce_poker_currency(small_blind, table["small_blind"]))
         if big_blind is not None:
             table["big_blind"] = max(table["small_blind"], _coerce_poker_currency(big_blind, table["big_blind"]))
+        if min_raise is not None:
+            table["min_raise"] = max(0.01, _coerce_poker_currency(min_raise, table["min_raise"]))
         if allow_spectators is not None:
             table["allow_spectators"] = bool(allow_spectators)
         if spectators_require_password is not None:
@@ -3180,6 +3194,7 @@ def update_poker_lan_table_settings(
     max_buy_in,
     small_blind,
     big_blind,
+    min_raise,
     allow_spectators=None,
     spectators_require_password=None,
     is_private=None,
@@ -3204,6 +3219,7 @@ def update_poker_lan_table_settings(
         table["max_buy_in"] = _coerce_poker_currency(max_buy_in, table["max_buy_in"])
         table["small_blind"] = max(0.01, _coerce_poker_currency(small_blind, table["small_blind"]))
         table["big_blind"] = max(table["small_blind"], _coerce_poker_currency(big_blind, table["big_blind"]))
+        table["min_raise"] = max(0.01, _coerce_poker_currency(min_raise, table["min_raise"]))
         if table["max_buy_in"] < table["min_buy_in"]:
             table["max_buy_in"] = table["min_buy_in"]
 
@@ -3411,6 +3427,7 @@ def set_poker_lan_player_ready(table_id, player_name, ready=True):
                 start_stacks,
                 table.get("small_blind", POKER_LAN_DEFAULT_SMALL_BLIND),
                 table.get("big_blind", POKER_LAN_DEFAULT_BIG_BLIND),
+                min_raise=table.get("min_raise", POKER_LAN_DEFAULT_MIN_RAISE),
                 dealer_index=max(0, min(start_index, len(start_stacks) - 1)),
             )
             if hand_state is None:

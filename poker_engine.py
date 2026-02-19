@@ -238,7 +238,7 @@ def _start_next_street(state):
         player["street_commit"] = 0
 
     state["current_bet"] = 0
-    state["min_raise"] = state["big_blind"]
+    state["min_raise"] = state.get("table_min_raise", state["big_blind"])
 
     if state["street"] == STREET_PRE_FLOP:
         if state["deck"]:
@@ -287,7 +287,7 @@ def _maybe_advance(state):
             state["acting_index"] = next_idx
 
 
-def create_hand(player_stacks, small_blind, big_blind, dealer_index=0, seed=None):
+def create_hand(player_stacks, small_blind, big_blind, min_raise=None, dealer_index=0, seed=None):
     rng = Random(seed)
     players = []
     for name, stack in player_stacks:
@@ -312,6 +312,8 @@ def create_hand(player_stacks, small_blind, big_blind, dealer_index=0, seed=None
         dealer_index = active[0]
 
     deck = _new_deck(rng)
+    if min_raise is None:
+        min_raise = big_blind
     state = {
         "players": players,
         "small_blind": max(1, to_cents(small_blind)),
@@ -321,7 +323,8 @@ def create_hand(player_stacks, small_blind, big_blind, dealer_index=0, seed=None
         "board": [],
         "street": STREET_PRE_FLOP,
         "current_bet": 0,
-        "min_raise": max(1, to_cents(big_blind)),
+        "min_raise": max(1, to_cents(min_raise)),
+        "table_min_raise": max(1, to_cents(min_raise)),
         "acting_index": None,
         "pending_to_act": [],
         "pot": 0,
