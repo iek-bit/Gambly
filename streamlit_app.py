@@ -22,18 +22,13 @@ from storage import (
     add_account_value,
     acquire_account_session,
     auto_remove_blackjack_lan_player,
-    auto_remove_poker_lan_player,
     blackjack_lan_player_action,
     can_spectate_blackjack_lan_table,
-    can_spectate_poker_lan_table,
     create_blackjack_lan_table,
-    create_poker_lan_table,
     create_account_record,
     delete_blackjack_lan_table,
-    delete_poker_lan_table,
     delete_account,
     find_blackjack_lan_table_for_player,
-    find_poker_lan_table_for_player,
     force_acquire_account_session,
     get_account_admin_status,
     get_account_stats,
@@ -44,33 +39,105 @@ from storage import (
     get_account_value,
     get_blackjack_lan_settings,
     get_blackjack_lan_tables,
-    get_poker_lan_settings,
-    get_poker_lan_tables,
     is_reserved_account_name,
     join_blackjack_lan_table,
-    join_poker_lan_table,
     leave_blackjack_lan_table,
-    leave_poker_lan_table,
     list_account_names,
     load_game_limits,
     load_saved_odds,
-    poker_lan_player_action,
     record_game_result,
     save_game_limits,
     save_odds,
     set_blackjack_lan_player_ready,
     set_blackjack_lan_player_bet,
-    set_poker_lan_player_ready,
     set_account_admin_status,
     set_account_settings,
     set_account_value,
     set_account_password,
     update_blackjack_lan_global_settings,
     update_blackjack_lan_table_settings,
-    update_poker_lan_global_settings,
-    update_poker_lan_table_settings,
     release_account_session,
 )
+
+try:
+    from storage import (
+        auto_remove_poker_lan_player,
+        can_spectate_poker_lan_table,
+        create_poker_lan_table,
+        delete_poker_lan_table,
+        find_poker_lan_table_for_player,
+        get_poker_lan_settings,
+        get_poker_lan_tables,
+        join_poker_lan_table,
+        leave_poker_lan_table,
+        poker_lan_player_action,
+        set_poker_lan_player_ready,
+        update_poker_lan_global_settings,
+        update_poker_lan_table_settings,
+    )
+    POKER_STORAGE_AVAILABLE = True
+except ImportError:
+    POKER_STORAGE_AVAILABLE = False
+
+    def auto_remove_poker_lan_player(_player_name):
+        return True, "Poker multiplayer unavailable in this deployment."
+
+    def can_spectate_poker_lan_table(_table_id, password=""):
+        return False, "Poker multiplayer unavailable in this deployment."
+
+    def create_poker_lan_table(**_kwargs):
+        return False, "Poker multiplayer unavailable in this deployment."
+
+    def delete_poker_lan_table(_table_id):
+        return False, "Poker multiplayer unavailable in this deployment."
+
+    def find_poker_lan_table_for_player(_player_name):
+        return None
+
+    def get_poker_lan_settings():
+        return {
+            "default_max_players": 6,
+            "default_min_buy_in": 40.0,
+            "default_max_buy_in": 400.0,
+            "default_small_blind": 1.0,
+            "default_big_blind": 2.0,
+            "allow_spectators_by_default": True,
+            "turn_timeout_seconds": 30,
+        }
+
+    def get_poker_lan_tables():
+        return []
+
+    def join_poker_lan_table(_table_id, _player_name, password="", buy_in=None):
+        return False, "Poker multiplayer unavailable in this deployment."
+
+    def leave_poker_lan_table(_table_id, _player_name):
+        return False, "Poker multiplayer unavailable in this deployment."
+
+    def poker_lan_player_action(_table_id, _player_name, _action, amount=None):
+        return False, "Poker multiplayer unavailable in this deployment."
+
+    def set_poker_lan_player_ready(_table_id, _player_name, ready=True):
+        return False, "Poker multiplayer unavailable in this deployment.", False
+
+    def update_poker_lan_global_settings(_turn_timeout_seconds, allow_spectators_by_default=None):
+        return False, "Poker multiplayer unavailable in this deployment."
+
+    def update_poker_lan_table_settings(
+        _table_id,
+        _max_players,
+        _min_buy_in,
+        _max_buy_in,
+        _small_blind,
+        _big_blind,
+        allow_spectators=None,
+        spectators_require_password=None,
+        is_private=None,
+        password=None,
+        table_name=None,
+        turn_timeout_seconds=None,
+    ):
+        return False, "Poker multiplayer unavailable in this deployment."
 
 ADMIN_ACCOUNT_NAME = "isaac"
 BLACKJACK_DEALER_STAND_TOTAL = 17
