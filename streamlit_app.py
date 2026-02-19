@@ -10,13 +10,9 @@ import json
 import streamlit as st
 import streamlit.components.v1 as components
 import base64
-
-from logout_handler import start_logout_server
 from gameplay import calculate_payout
 from money_utils import format_money, house_round_charge, house_round_credit
 
-# Start the logout handler server once
-_logout_server_started = False
 from storage import (
     add_account_value,
     acquire_account_session,
@@ -34,6 +30,7 @@ from storage import (
     get_account_settings,
     get_account_password,
     get_accounts_snapshot,
+    get_storage_backend_type,
     get_account_value,
     get_blackjack_lan_settings,
     get_blackjack_lan_tables,
@@ -1178,15 +1175,6 @@ def apply_theme():
 
 
 def init_state():
-    global _logout_server_started
-    if not _logout_server_started:
-        try:
-            start_logout_server()
-            _logout_server_started = True
-        except Exception:
-            # Server might already be running or port in use; continue anyway
-            pass
-    
     st.session_state.setdefault("current_account", None)
     st.session_state.setdefault("client_session_id", uuid.uuid4().hex)
     st.session_state.setdefault("account_session_notice", None)
@@ -1290,60 +1278,6 @@ def _remove_active_multiplayer_presence():
             auto_remove_blackjack_lan_player(player_name)
         except Exception:
             pass
-
-
-def _render_unload_cleanup_script():
-    current_account = st.session_state.get("current_account")
-    guest_multiplayer_account = st.session_state.get("blackjack_multiplayer_guest_account")
-    session_id = _current_session_id()
-
-    tracked_accounts = []
-    tracked_players = []
-    for name in (current_account, guest_multiplayer_account):
-        if not name:
-            continue
-        if name not in tracked_players:
-            tracked_players.append(name)
-        tracked_accounts.append({"account": name, "session_id": session_id})
-    if not tracked_accounts and not tracked_players:
-        return
-
-    payload_json = json.dumps(
-        {
-            "accounts": tracked_accounts,
-            "lan_players": tracked_players,
-        }
-    )
-    payload_json = payload_json.replace("</", "<\\/")
-    components.html(
-        f"""
-        <script>
-        (function() {{
-          if (window.__gamblyUnloadCleanupInstalled) return;
-          window.__gamblyUnloadCleanupInstalled = true;
-          const payload = {payload_json};
-          const sendCleanup = function() {{
-            const data = JSON.stringify(payload);
-            try {{
-              const blob = new Blob([data], {{ type: "application/json" }});
-              navigator.sendBeacon("http://localhost:8502/logout", blob);
-            }} catch (e) {{
-              fetch("http://localhost:8502/logout", {{
-                method: "POST",
-                headers: {{ "Content-Type": "application/json" }},
-                body: data,
-                keepalive: true
-              }}).catch(function(){{}});
-            }}
-          }};
-          window.addEventListener("pagehide", sendCleanup, {{ capture: true }});
-          window.addEventListener("beforeunload", sendCleanup, {{ capture: true }});
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
 
 
 def _enforce_account_session_ownership():
@@ -3913,6 +3847,11 @@ def blackjack_ui():
                 return
 
         lan_settings = get_blackjack_lan_settings()
+        if get_storage_backend_type() != "supabase":
+            st.warning(
+                "Multiplayer is using local storage on this app instance. "
+                "Real-time play only syncs for users connected to this same running host."
+            )
         tables = get_blackjack_lan_tables()
         joined_table = joined_lan_table
         spectate_table = None
@@ -4211,6 +4150,10 @@ def blackjack_ui():
                                 st.error(message)
                             _fast_rerun()
                 st.markdown("---")
+            _schedule_non_blocking_rerun(
+                1200,
+                key="blackjack_lan_tables_list_autorefresh",
+            )
             return
 
         table_to_view = joined_table if joined_table is not None else spectate_table
@@ -4410,22 +4353,22 @@ def blackjack_ui():
             and seconds_left > 0
         ):
             _schedule_non_blocking_rerun(
-                700,
+                450,
                 key=f"blackjack_lan_timer_autorefresh_{table_id}",
             )
         elif table_to_view.get("phase") == "player_turns" and bool(table_to_view.get("in_progress")):
             _schedule_non_blocking_rerun(
-                900,
+                550,
                 key=f"blackjack_lan_turns_autorefresh_{table_id}",
             )
         elif table_to_view.get("phase") in {"waiting_for_bets", "waiting_for_players"}:
             _schedule_non_blocking_rerun(
-                1800,
+                900,
                 key=f"blackjack_lan_lobby_autorefresh_{table_id}",
             )
         elif table_to_view.get("phase") == "finished":
             _schedule_non_blocking_rerun(
-                1400,
+                800,
                 key=f"blackjack_lan_finished_autorefresh_{table_id}",
             )
         return
@@ -5110,7 +5053,6 @@ def main():
     sync_ui_settings_for_active_account()
     autosave_ui_settings_for_current_account()
     apply_theme()
-    _render_unload_cleanup_script()
     _render_account_session_notice()
     _render_storage_unavailable_notice()
     if st.session_state.get("storage_unavailable", False) and st.session_state.get("current_account"):

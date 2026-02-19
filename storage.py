@@ -1862,6 +1862,11 @@ def get_account_stats(name, game_type=None):
     return _normalize_stats_bucket(stats.get("game_breakdown", {}).get(selected_game_type, {}))
 
 
+def get_storage_backend_type():
+    backend = _get_storage_backend()
+    return str(backend.get("type", "local"))
+
+
 def get_accounts_snapshot(game_type=None):
     data = _load_data()
     selected_game_type = _normalize_game_type(game_type)
