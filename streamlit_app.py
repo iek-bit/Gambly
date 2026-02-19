@@ -755,6 +755,16 @@ def apply_theme():
             "<text x='256' y='146' font-size='56' font-weight='700' fill='white' fill-opacity='0.55'>♠</text>"
             "</svg>"
         ),
+        "home_card_poker": _svg_background_uri(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 420 220'>"
+            "<rect width='420' height='220' fill='none'/>"
+            "<ellipse cx='210' cy='112' rx='134' ry='60' fill='white' fill-opacity='0.18' stroke='white' stroke-opacity='0.32'/>"
+            "<circle cx='156' cy='112' r='26' fill='white' fill-opacity='0.28'/>"
+            "<circle cx='210' cy='112' r='26' fill='white' fill-opacity='0.22'/>"
+            "<circle cx='264' cy='112' r='26' fill='white' fill-opacity='0.28'/>"
+            "<text x='210' y='122' text-anchor='middle' font-size='28' font-weight='700' fill='white' fill-opacity='0.52'>HOLD'EM</text>"
+            "</svg>"
+        ),
         "home_card_leaderboards": _svg_background_uri(
             "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 420 220'>"
             "<rect width='420' height='220' fill='none'/>"
@@ -5690,13 +5700,6 @@ def home_ui():
             "home_card_poker",
             reset_guest_setup=True,
         )
-        _home_action_button(
-            "Leaderboards",
-            "Leaderboards",
-            "home_leaderboards",
-            "home_card_leaderboards",
-            disabled=storage_unavailable,
-        )
     with account_col:
         st.caption("Account & Tools")
         _home_action_button(
@@ -5718,6 +5721,13 @@ def home_ui():
             "Calculate odds",
             "home_calc_odds",
             "home_card_calc_odds",
+        )
+        _home_action_button(
+            "Leaderboards",
+            "Leaderboards",
+            "home_leaderboards",
+            "home_card_leaderboards",
+            disabled=storage_unavailable,
         )
 
     if is_admin_user():
