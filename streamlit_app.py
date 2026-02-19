@@ -755,6 +755,14 @@ def apply_theme():
             "<text x='256' y='146' font-size='56' font-weight='700' fill='white' fill-opacity='0.55'>♠</text>"
             "</svg>"
         ),
+        "home_card_help": _svg_background_uri(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 420 220'>"
+            "<rect width='420' height='220' fill='none'/>"
+            "<circle cx='210' cy='108' r='70' fill='none' stroke='white' stroke-opacity='0.35' stroke-width='11'/>"
+            "<text x='210' y='120' text-anchor='middle' font-size='84' font-weight='800' fill='white' fill-opacity='0.55'>?</text>"
+            "<rect x='184' y='156' width='52' height='10' rx='5' fill='white' fill-opacity='0.4'/>"
+            "</svg>"
+        ),
         "home_card_poker": _svg_background_uri(
             "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 420 220'>"
             "<rect width='420' height='220' fill='none'/>"
@@ -5442,8 +5450,50 @@ def render_poker_multiplayer(account):
 
 def poker_ui():
     st.subheader("Poker (Texas Hold'em)")
-    mode = st.radio("Mode", ["Single Player", "Multiplayer"], horizontal=True, key="poker_mode_select")
+    mode = st.session_state.get("poker_mode_select", "Single Player")
+    if mode not in {"Single Player", "Multiplayer"}:
+        mode = "Single Player"
+        st.session_state["poker_mode_select"] = mode
     account = st.session_state.get("current_account")
+
+    single_state = st.session_state.get("poker_single_state")
+    single_hand = single_state.get("hand_state") if isinstance(single_state, dict) else None
+    is_single_round_active = (
+        mode == "Single Player"
+        and isinstance(single_hand, dict)
+        and single_hand.get("street") not in {None, "finished"}
+    )
+
+    joined_table = None
+    if account is not None:
+        joined_table = find_poker_lan_table_for_player(account)
+    is_multiplayer_round_active = (
+        mode == "Multiplayer"
+        and isinstance(joined_table, dict)
+        and bool(joined_table.get("in_progress", False))
+    )
+
+    if is_single_round_active or is_multiplayer_round_active:
+        st.markdown("**Mode selection is locked while this round is in progress.**")
+    else:
+        st.markdown("**Choose a mode:**")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Single Player", key="poker_mode_single", use_container_width=True):
+                st.session_state["poker_mode_select"] = "Single Player"
+                _fast_rerun(force=True)
+        with col2:
+            if st.button("Multiplayer", key="poker_mode_multi", use_container_width=True):
+                st.session_state["poker_mode_select"] = "Multiplayer"
+                _fast_rerun(force=True)
+
+    mode = st.session_state.get("poker_mode_select", "Single Player")
+    st.markdown(
+        f"<div style='margin-top: 0.5rem; font-weight: bold; color: var(--text-color);'>Current mode: "
+        f"<span style='color: var(--primary-color);'>{mode}</span></div>",
+        unsafe_allow_html=True,
+    )
+
     if mode == "Single Player":
         render_poker_single_player(account)
         return
@@ -5828,6 +5878,65 @@ def admin_account_tools_ui():
         st.info("Only isaac can grant or remove admin access.")
 
 
+def help_ui():
+    st.subheader("How To Play")
+    st.caption("Quick guide for all games and common terms.")
+
+    st.markdown("### Number Guessing Game")
+    st.markdown(
+        "- **You guess the number:** You pick the range, number of guesses, and buy-in. The app chooses a secret number.\n"
+        "- **Goal:** Find the exact number before you run out of guesses.\n"
+        "- **Win/Lose:** If you guess correctly, you win the payout shown before starting. If not, you lose your buy-in.\n"
+        "- **Computer guesses your number:** You choose the secret number and settings. The computer tries to find it in time.\n"
+        "- **Risk in computer mode:** If the computer succeeds, you pay the shown loss amount."
+    )
+    st.markdown("**Number guessing terms**")
+    st.markdown(
+        "- **Range max:** Highest possible number in the game.\n"
+        "- **Buy-in / Price per round:** Amount at stake for starting a round.\n"
+        "- **Guesses allowed:** Maximum attempts before the round ends.\n"
+        "- **Payout:** Amount returned on a win."
+    )
+
+    st.markdown("### Blackjack")
+    st.markdown(
+        "- **Goal:** Beat the dealer without going over 21.\n"
+        "- **Flow:** Place bet -> cards dealt -> choose **Hit** or **Stand**.\n"
+        "- **Hit:** Take another card.\n"
+        "- **Stand:** End your turn with your current total.\n"
+        "- **Dealer rule:** Dealer draws to at least 17.\n"
+        "- **Natural blackjack:** An Ace + 10-value card on the first two cards."
+    )
+    st.markdown("**Blackjack terms**")
+    st.markdown(
+        "- **Bust:** Hand total goes over 21 (automatic loss).\n"
+        "- **Push:** Tie with dealer; bet is returned.\n"
+        "- **Dealer upcard:** Dealer card you can see during your turn.\n"
+        "- **Bet:** Amount risked for that hand."
+    )
+
+    st.markdown("### Texas Hold'em Poker")
+    st.markdown(
+        "- **Goal:** Win chips by making the best 5-card hand (or making everyone else fold).\n"
+        "- **Cards:** Each player gets 2 private cards (**hole cards**). Up to 5 shared cards (**community cards**) are dealt.\n"
+        "- **Betting rounds:** **Preflop** (before board), **Flop** (3 cards), **Turn** (4th card), **River** (5th card).\n"
+        "- **Actions:** **Fold**, **Check**, **Call**, **Bet**, **Raise**, **All-in**.\n"
+        "- **Showdown:** If players remain after river betting, remaining hands are compared."
+    )
+    st.markdown("**Poker terms**")
+    st.markdown(
+        "- **Blinds (SB/BB):** Forced bets that start the action each hand.\n"
+        "- **Pot:** Total chips currently being contested.\n"
+        "- **Current bet:** Amount a player must match to stay in the round.\n"
+        "- **Check:** Pass action when no bet is required.\n"
+        "- **Call:** Match the current bet.\n"
+        "- **Raise:** Increase the required bet.\n"
+        "- **Fold:** Give up your hand for this round.\n"
+        "- **All-in:** Bet all remaining chips.\n"
+        "- **Side pot:** Extra pot created when players are all-in for different amounts."
+    )
+
+
 def home_ui():
     st.subheader("Home")
     storage_unavailable = bool(st.session_state.get("storage_unavailable", False))
@@ -5886,6 +5995,12 @@ def home_ui():
             "home_poker",
             "home_card_poker",
             reset_guest_setup=True,
+        )
+        _home_action_button(
+            "Help",
+            "Help",
+            "home_help",
+            "home_card_help",
         )
     with account_col:
         st.caption("Account & Tools")
@@ -5977,6 +6092,7 @@ def main():
         st.session_state["redirect_to_home"] = False
     allowed_actions = {
         "Home",
+        "Help",
         "Look up account",
         "Add/withdraw money",
         "Calculate odds",
@@ -6028,6 +6144,8 @@ def main():
 
     if st.session_state["active_action"] == "Look up account":
         lookup_account_ui()
+    elif st.session_state["active_action"] == "Help":
+        help_ui()
     elif st.session_state["active_action"] == "Add/withdraw money":
         add_withdraw_ui()
     elif st.session_state["active_action"] == "Calculate odds":
