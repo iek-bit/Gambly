@@ -4354,7 +4354,15 @@ def render_poker_multiplayer(account):
         for table in tables:
             table_id = int(table.get("id", 0))
             st.markdown(
-                f"**{table.get('name', f'Table {table_id}')}** | "
+                (
+                    "<div style='font-size:1.22rem; font-weight:800; color:rgba(247, 252, 255, 0.98); "
+                    "letter-spacing:0.01em; margin:0.18rem 0 0.12rem 0;'>"
+                    f"{table.get('name', f'Table {table_id}')}"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            st.markdown(
                 f"{len(table.get('players', []))}/{int(table.get('max_players', 6))} players | "
                 f"Blinds ${format_money(table.get('small_blind', 1.0))}/${format_money(table.get('big_blind', 2.0))} | "
                 f"Min raise ${format_money(table.get('min_raise', 0.01))}"
