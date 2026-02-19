@@ -1868,7 +1868,7 @@ def render_back_button():
         current_account = st.session_state.get("current_account")
         if current_account:
             joined_poker_table = _cached_find_poker_lan_table_for_player(current_account)
-            if isinstance(joined_poker_table, dict) and bool(joined_poker_table.get("in_progress", False)):
+            if isinstance(joined_poker_table, dict):
                 return
 
     if not st.session_state.get("show_auth_flow") and st.session_state.get("active_action") == "Home":

@@ -1285,6 +1285,8 @@ def _poker_run_bot_actions_unlocked(table):
 def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, allow_in_hand=False):
     removed = False
     for table in lan_state.get("tables", []):
+        if not isinstance(table, dict):
+            continue
         membership = _poker_lan_table_member_state(table, player_name)
         if membership is None:
             continue
@@ -1305,7 +1307,8 @@ def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, 
         table["players"] = [name for name in table.get("players", []) if name != player_name]
         table.get("player_states", {}).pop(player_name, None)
         if table.get("host") == player_name:
-            table["host"] = table["players"][0] if table["players"] else None
+            humans = _poker_table_human_players(table)
+            table["host"] = humans[0] if humans else None
 
         if table.get("in_progress") and isinstance(table.get("hand_state"), dict):
             for hand_player in table["hand_state"].get("players", []):
@@ -1313,14 +1316,17 @@ def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, 
                     hand_player["folded"] = True
                     hand_player["all_in"] = True
             _poker_lan_append_history(table, f"{player_name} left during an active hand and was folded.")
+            _poker_run_bot_actions_unlocked(table)
+            hand_state = table.get("hand_state")
+            if isinstance(hand_state, dict) and hand_state.get("street") == "finished":
+                _poker_finalize_finished_hand_unlocked(data, table)
 
-        if not table["players"]:
+        if not table.get("players", []):
             reset = _default_poker_lan_table(table.get("id", 1), settings=lan_state.get("settings", {}))
             reset["name"] = _normalize_poker_lan_table_name(table.get("name"), table.get("id", 1))
             table.clear()
             table.update(reset)
         else:
-            table["ready_players"] = []
             table["last_updated_epoch"] = time.time()
     return removed
 
