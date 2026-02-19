@@ -4043,13 +4043,25 @@ def _poker_render_cards_html(cards):
 
 
 def _poker_display_player_name(name):
-    text = str(name or "").strip()
-    if text.startswith("bot_"):
-        parts = text.split("_")
-        if len(parts) >= 3 and parts[-1].isdigit():
-            return f"Bot {parts[-1]}"
-        return "Bot"
-    return text
+    return str(name or "").strip()
+
+
+def _poker_random_bot_name(existing_names=None):
+    first_names = [
+        "Liam", "Noah", "Milo", "Owen", "Ezra", "Aiden", "Leo", "Eli", "Nora", "Luna",
+        "Maya", "Zoe", "Ivy", "Aria", "Ava", "Nina", "Emma", "Chloe", "Ruby", "Mia",
+    ]
+    blocked = set(existing_names or [])
+    for _ in range(80):
+        candidate = first_names[randint(0, len(first_names) - 1)]
+        if candidate not in blocked:
+            return candidate
+    fallback = first_names[randint(0, len(first_names) - 1)]
+    for suffix in range(2, 100):
+        candidate = f"{fallback}{suffix}"
+        if candidate not in blocked:
+            return candidate
+    return f"{fallback}{randint(100, 999)}"
 
 
 def render_poker_table_view(public_state, viewer_name):
@@ -4255,6 +4267,30 @@ def render_poker_analytics_sidebar(public_state, account, viewer_name):
 
 
 def render_poker_single_player(account):
+    def _start_single_player_hand(current_round_state):
+        alive_players = [
+            (name, float(stack))
+            for name, stack in current_round_state.get("stacks", {}).items()
+            if float(stack) > 0
+        ]
+        if len(alive_players) < 2:
+            return False, "Not enough players with chips."
+        hand_state, error = poker_create_hand(
+            alive_players,
+            current_round_state.get("small_blind", 1.0),
+            current_round_state.get("big_blind", 2.0),
+            dealer_index=int(current_round_state.get("dealer_index", 0)) % len(alive_players),
+        )
+        if hand_state is None:
+            return False, error or "Unable to start hand."
+        current_round_state["hand_state"] = hand_state
+        current_round_state["hand_start_hero_stack"] = float(current_round_state.get("stacks", {}).get("You", 0.0))
+        current_round_state["last_hand_recorded"] = False
+        current_round_state["dealer_index"] = (int(current_round_state.get("dealer_index", 0)) + 1) % len(alive_players)
+        _poker_single_player_run_bots(current_round_state)
+        st.session_state["poker_single_state"] = current_round_state
+        return True, ""
+
     round_state = st.session_state.get("poker_single_state")
     if not isinstance(round_state, dict):
         with st.form("poker_single_setup_form"):
@@ -4266,8 +4302,11 @@ def render_poker_single_player(account):
         if not submitted:
             return
         stacks = {"You": float(starting_stack)}
-        for idx in range(1, int(num_bots) + 1):
-            stacks[f"Bot {idx}"] = float(starting_stack)
+        used_bot_names = set(stacks.keys())
+        for _idx in range(1, int(num_bots) + 1):
+            bot_name = _poker_random_bot_name(used_bot_names)
+            used_bot_names.add(bot_name)
+            stacks[bot_name] = float(starting_stack)
         st.session_state["poker_single_state"] = {
             "stacks": stacks,
             "dealer_index": 0,
@@ -4289,25 +4328,14 @@ def render_poker_single_player(account):
                 _fast_rerun(force=True)
             return
         if st.button("Deal next hand", key="poker_single_deal", use_container_width=True):
-            hand_state, error = poker_create_hand(
-                alive,
-                round_state.get("small_blind", 1.0),
-                round_state.get("big_blind", 2.0),
-                dealer_index=int(round_state.get("dealer_index", 0)) % len(alive),
-            )
-            if hand_state is None:
-                st.error(error or "Unable to start hand.")
+            ok, error = _start_single_player_hand(round_state)
+            if not ok:
+                st.error(error)
                 return
-            round_state["hand_state"] = hand_state
-            round_state["hand_start_hero_stack"] = float(round_state.get("stacks", {}).get("You", 0.0))
-            round_state["last_hand_recorded"] = False
-            round_state["dealer_index"] = (int(round_state.get("dealer_index", 0)) + 1) % len(alive)
-            _poker_single_player_run_bots(round_state)
-            st.session_state["poker_single_state"] = round_state
             _fast_rerun(force=True)
         st.markdown("### Stacks")
         for name, amount in sorted(round_state.get("stacks", {}).items()):
-            st.write(f"- {name}: ${format_money(amount)}")
+            st.write(f"- {_poker_display_player_name(name)}: ${format_money(amount)}")
         return
 
     hand_state = round_state.get("hand_state")
@@ -4372,8 +4400,12 @@ def render_poker_single_player(account):
         round_state["last_hand_recorded"] = True
     st.success(f"Hand complete. Net: ${format_money(hand_delta)}")
     if st.button("Next hand", key="poker_single_next_hand", use_container_width=True):
-        round_state["hand_state"] = None
-        st.session_state["poker_single_state"] = round_state
+        ok, error = _start_single_player_hand(round_state)
+        if not ok:
+            round_state["hand_state"] = None
+            st.session_state["poker_single_state"] = round_state
+            st.warning(error)
+            return
         _fast_rerun(force=True)
 
 

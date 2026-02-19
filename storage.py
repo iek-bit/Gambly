@@ -1,6 +1,7 @@
 """Persistent storage helpers for accounts and odds."""
 
 import json
+import random
 import threading
 import time
 from contextlib import contextmanager
@@ -899,6 +900,10 @@ POKER_LAN_DEFAULT_TURN_TIMEOUT_SECONDS = 30
 POKER_LAN_PHASE_WAITING = "waiting_ready"
 POKER_LAN_PHASE_IN_HAND = "in_hand"
 POKER_LAN_PHASE_FINISHED = "finished"
+POKER_BOT_FIRST_NAMES = [
+    "Liam", "Noah", "Milo", "Owen", "Ezra", "Aiden", "Leo", "Eli", "Nora", "Luna",
+    "Maya", "Zoe", "Ivy", "Aria", "Ava", "Nina", "Emma", "Chloe", "Ruby", "Mia",
+]
 
 
 def _default_poker_lan_settings():
@@ -980,12 +985,27 @@ def _normalize_poker_lan_table_name(name, fallback_id):
     return name.strip()[:60]
 
 
-def _poker_bot_name(table_id, bot_index):
-    return f"bot_{int(table_id)}_{int(bot_index)}"
+def _poker_random_bot_name(existing_names=None):
+    blocked = set(existing_names or [])
+    shuffled = list(POKER_BOT_FIRST_NAMES)
+    random.shuffle(shuffled)
+    for name in shuffled:
+        if name not in blocked:
+            return name
+    fallback = random.choice(POKER_BOT_FIRST_NAMES)
+    for suffix in range(2, 100):
+        candidate = f"{fallback}{suffix}"
+        if candidate not in blocked:
+            return candidate
+    return f"{fallback}{random.randint(100, 999)}"
 
 
-def _poker_is_bot_name(player_name):
+def _poker_is_bot_name(player_name, table=None):
     text = str(player_name or "").strip().lower()
+    if isinstance(table, dict):
+        bot_players = table.get("bot_players", [])
+        if isinstance(bot_players, list) and str(player_name or "").strip() in bot_players:
+            return True
     return text.startswith("bot_")
 
 
@@ -993,10 +1013,43 @@ def _poker_table_human_players(table):
     humans = []
     for name in table.get("players", []):
         text = str(name).strip()
-        if not text or _poker_is_bot_name(text):
+        if not text or _poker_is_bot_name(text, table):
             continue
         humans.append(text)
     return humans
+
+
+def _poker_refresh_bot_names_unlocked(table):
+    if not isinstance(table, dict):
+        return
+    if bool(table.get("in_progress", False)):
+        return
+    players = list(table.get("players", []))
+    bot_names = [name for name in players if _poker_is_bot_name(name, table)]
+    if not bot_names:
+        return
+    humans = [name for name in players if not _poker_is_bot_name(name, table)]
+    existing = set(humans)
+    mapping = {}
+    for old_name in bot_names:
+        new_name = _poker_random_bot_name(existing)
+        existing.add(new_name)
+        mapping[old_name] = new_name
+    table["players"] = [mapping.get(name, name) for name in players]
+    table["bot_players"] = [mapping.get(name, name) for name in table.get("bot_players", [])]
+    table["pending_players"] = [mapping.get(name, name) for name in table.get("pending_players", [])]
+
+    player_states = table.get("player_states", {})
+    if isinstance(player_states, dict):
+        rebuilt_states = {}
+        for key, value in player_states.items():
+            rebuilt_states[mapping.get(key, key)] = value
+        table["player_states"] = rebuilt_states
+
+    if table.get("host") in mapping or _poker_is_bot_name(table.get("host"), table):
+        human_players = _poker_table_human_players(table)
+        table["host"] = human_players[0] if human_players else None
+    table["last_updated_epoch"] = time.time()
 
 
 def _default_poker_lan_table(table_id, settings=None):
@@ -1007,6 +1060,7 @@ def _default_poker_lan_table(table_id, settings=None):
         "host": None,
         "players": [],
         "pending_players": [],
+        "bot_players": [],
         "bot_count": 0,
         "player_states": {},
         "max_players": int(normalized_settings["default_max_players"]),
@@ -1067,6 +1121,13 @@ def _normalize_poker_lan_table(raw_table, fallback_id, settings=None):
     raw_pending = raw_table.get("pending_players", [])
     if isinstance(raw_pending, list):
         table["pending_players"] = [str(name).strip() for name in raw_pending if str(name).strip()]
+    raw_bot_players = raw_table.get("bot_players", [])
+    if isinstance(raw_bot_players, list):
+        table["bot_players"] = [str(name).strip() for name in raw_bot_players if str(name).strip()]
+    else:
+        table["bot_players"] = [
+            name for name in table.get("players", []) if str(name).strip().lower().startswith("bot_")
+        ]
     try:
         table["max_players"] = max(2, min(6, int(raw_table.get("max_players", table["max_players"]))))
     except (TypeError, ValueError):
@@ -1143,14 +1204,15 @@ def _normalize_poker_lan_table(raw_table, fallback_id, settings=None):
     for player_name in table["players"]:
         normalized_states.setdefault(player_name, _normalize_poker_player_state({}))
     table["player_states"] = normalized_states
+    table["bot_players"] = [name for name in table.get("bot_players", []) if name in table.get("players", [])]
     for player_name in table["players"]:
-        if _poker_is_bot_name(player_name):
+        if _poker_is_bot_name(player_name, table):
             table["player_states"][player_name]["ready"] = True
-    actual_bot_count = sum(1 for name in table.get("players", []) if _poker_is_bot_name(name))
+    actual_bot_count = sum(1 for name in table.get("players", []) if _poker_is_bot_name(name, table))
     max_bots = min(POKER_LAN_MAX_BOTS_PER_TABLE, max(0, int(table.get("max_players", 6)) - 1))
     table["bot_count"] = max(0, min(max_bots, actual_bot_count))
 
-    if table["host"] not in table["players"] or _poker_is_bot_name(table["host"]):
+    if table["host"] not in table["players"] or _poker_is_bot_name(table["host"], table):
         humans = _poker_table_human_players(table)
         table["host"] = humans[0] if humans else None
 
@@ -1269,7 +1331,7 @@ def _poker_run_bot_actions_unlocked(table):
         if acting_index < 0 or acting_index >= len(players):
             break
         acting_player = str(players[acting_index].get("name", "")).strip()
-        if not acting_player or (not _poker_is_bot_name(acting_player)):
+        if not acting_player or (not _poker_is_bot_name(acting_player, table)):
             break
         legal = poker_legal_actions(hand_state, acting_player)
         actions = legal.get("actions", [])
@@ -1308,6 +1370,7 @@ def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, 
             account["balance"] = house_round_balance(account.get("balance", 0.0) + from_cents(stack_cents))
 
         table["players"] = [name for name in table.get("players", []) if name != player_name]
+        table["bot_players"] = [name for name in table.get("bot_players", []) if name != player_name]
         table.get("player_states", {}).pop(player_name, None)
         if table.get("host") == player_name:
             humans = _poker_table_human_players(table)
@@ -1330,6 +1393,8 @@ def _poker_remove_player_from_all_tables_unlocked(data, lan_state, player_name, 
             table.clear()
             table.update(reset)
         else:
+            if membership == "player" and (not bool(table.get("in_progress", False))):
+                _poker_refresh_bot_names_unlocked(table)
             table["last_updated_epoch"] = time.time()
     return removed
 
@@ -1461,9 +1526,12 @@ def create_poker_lan_table(
         for existing in lane:
             if _normalize_poker_lan_table_name(existing.get("name"), existing.get("id")) == table["name"]:
                 return False, "A table with that name already exists."
-        for bot_index in range(1, int(table.get("bot_count", 0)) + 1):
-            bot_name = _poker_bot_name(table_id, bot_index)
+        used_names = set(table.get("players", []))
+        for _bot_index in range(1, int(table.get("bot_count", 0)) + 1):
+            bot_name = _poker_random_bot_name(used_names)
+            used_names.add(bot_name)
             table.setdefault("players", []).append(bot_name)
+            table.setdefault("bot_players", []).append(bot_name)
             table.setdefault("player_states", {})[bot_name] = _normalize_poker_player_state(
                 {"stack_cents": int(round(float(table.get("min_buy_in", 0.0)) * 100)), "ready": True}
             )
@@ -1485,7 +1553,7 @@ def delete_poker_lan_table(table_id):
             return False, "Table not found."
         if bool(table.get("in_progress")):
             return False, "Cannot delete a table during an active hand."
-        human_players = [name for name in table.get("players", []) if not _poker_is_bot_name(name)]
+        human_players = [name for name in table.get("players", []) if not _poker_is_bot_name(name, table)]
         if human_players or table.get("pending_players"):
             return False, "Cannot delete table while players are seated or queued."
         lan_state["tables"] = [entry for entry in lan_state.get("tables", []) if int(entry.get("id", -1)) != int(table_id)]
@@ -1639,7 +1707,7 @@ def join_poker_lan_table(table_id, player_name, password="", buy_in=None):
         destination.setdefault("player_states", {})[normalized_player] = _normalize_poker_player_state(
             {"stack_cents": int(round(normalized_buy_in * 100))}
         )
-        if (not destination.get("host")) or _poker_is_bot_name(destination.get("host")):
+        if (not destination.get("host")) or _poker_is_bot_name(destination.get("host"), destination):
             destination["host"] = normalized_player
         destination["phase"] = POKER_LAN_PHASE_WAITING
         destination["last_updated_epoch"] = time.time()
@@ -1718,7 +1786,7 @@ def set_poker_lan_player_ready(table_id, player_name, ready=True):
             for name in table.get("players", [])
             if (
                 bool(table.get("player_states", {}).get(name, {}).get("ready", False))
-                or _poker_is_bot_name(name)
+                or _poker_is_bot_name(name, table)
             )
             and int(table.get("player_states", {}).get(name, {}).get("stack_cents", 0)) > 0
         ]
@@ -1755,7 +1823,7 @@ def set_poker_lan_player_ready(table_id, player_name, ready=True):
             table["dealer_index"] = (int(table.get("dealer_index", 0)) + 1) % max(1, len(seated_eligible))
             for name in table.get("players", []):
                 table.setdefault("player_states", {}).setdefault(name, _normalize_poker_player_state({}))
-                table["player_states"][name]["ready"] = _poker_is_bot_name(name)
+                table["player_states"][name]["ready"] = _poker_is_bot_name(name, table)
             _poker_run_bot_actions_unlocked(table)
             if hand_state.get("street") == "finished":
                 _poker_finalize_finished_hand_unlocked(data, table)
