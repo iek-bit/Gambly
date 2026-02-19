@@ -463,6 +463,32 @@ def _schedule_non_blocking_rerun(interval_ms, key):
     return
 
 
+def _adaptive_refresh_interval_ms(
+    *,
+    state_key,
+    signature,
+    base_ms,
+    min_ms=300,
+    max_ms=2200,
+    ramp_step_ms=140,
+    ramp_limit=10,
+):
+    previous = st.session_state.get(state_key)
+    stable_cycles = 0
+    if isinstance(previous, dict) and previous.get("signature") == signature:
+        try:
+            stable_cycles = int(previous.get("stable_cycles", 0)) + 1
+        except (TypeError, ValueError):
+            stable_cycles = 1
+    stable_cycles = max(0, min(ramp_limit, stable_cycles))
+    st.session_state[state_key] = {
+        "signature": signature,
+        "stable_cycles": stable_cycles,
+    }
+    interval = int(base_ms) + (stable_cycles * int(ramp_step_ms))
+    return max(int(min_ms), min(int(max_ms), interval))
+
+
 def _svg_background_uri(svg: str) -> str:
     """Return a data URI for an SVG string (base64-encoded).
 
@@ -4130,8 +4156,28 @@ def blackjack_ui():
                                 st.error(message)
                             _fast_rerun()
                 st.markdown("---")
+            list_signature = tuple(
+                (
+                    int(table.get("id", 0)),
+                    float(table.get("last_updated_epoch", 0.0) or 0.0),
+                    str(table.get("phase", "")),
+                    bool(table.get("in_progress", False)),
+                    len(table.get("players", [])),
+                    len(table.get("pending_players", [])),
+                )
+                for table in visible_tables
+            )
+            list_interval_ms = _adaptive_refresh_interval_ms(
+                state_key="blackjack_lan_tables_list_sync_state",
+                signature=list_signature,
+                base_ms=900,
+                min_ms=450,
+                max_ms=2200,
+                ramp_step_ms=170,
+                ramp_limit=9,
+            )
             _schedule_non_blocking_rerun(
-                1200,
+                list_interval_ms,
                 key="blackjack_lan_tables_list_autorefresh",
             )
             return
@@ -4325,6 +4371,16 @@ def blackjack_ui():
             else:
                 for entry in history[-25:]:
                     st.write(blackjack_ui_format_history_entry(entry, guest_alias_map))
+        table_signature = (
+            int(table_id),
+            float(table_to_view.get("last_updated_epoch", 0.0) or 0.0),
+            str(table_to_view.get("phase", "")),
+            bool(table_to_view.get("in_progress", False)),
+            int(table_to_view.get("round", 0)),
+            str(current_turn_player or ""),
+            int(len(table_to_view.get("players", []))),
+            int(len(table_to_view.get("pending_players", []))),
+        )
         if (
             table_turn_timeout is not None
             and table_to_view.get("phase") == "player_turns"
@@ -4332,23 +4388,59 @@ def blackjack_ui():
             and seconds_left is not None
             and seconds_left > 0
         ):
+            interval_ms = _adaptive_refresh_interval_ms(
+                state_key=f"blackjack_lan_table_sync_state_{table_id}",
+                signature=table_signature,
+                base_ms=430,
+                min_ms=280,
+                max_ms=1400,
+                ramp_step_ms=110,
+                ramp_limit=7,
+            )
             _schedule_non_blocking_rerun(
-                450,
+                interval_ms,
                 key=f"blackjack_lan_timer_autorefresh_{table_id}",
             )
         elif table_to_view.get("phase") == "player_turns" and bool(table_to_view.get("in_progress")):
+            interval_ms = _adaptive_refresh_interval_ms(
+                state_key=f"blackjack_lan_table_sync_state_{table_id}",
+                signature=table_signature,
+                base_ms=520,
+                min_ms=320,
+                max_ms=1500,
+                ramp_step_ms=120,
+                ramp_limit=7,
+            )
             _schedule_non_blocking_rerun(
-                550,
+                interval_ms,
                 key=f"blackjack_lan_turns_autorefresh_{table_id}",
             )
         elif table_to_view.get("phase") in {"waiting_for_bets", "waiting_for_players"}:
+            interval_ms = _adaptive_refresh_interval_ms(
+                state_key=f"blackjack_lan_table_sync_state_{table_id}",
+                signature=table_signature,
+                base_ms=800,
+                min_ms=450,
+                max_ms=2300,
+                ramp_step_ms=180,
+                ramp_limit=8,
+            )
             _schedule_non_blocking_rerun(
-                900,
+                interval_ms,
                 key=f"blackjack_lan_lobby_autorefresh_{table_id}",
             )
         elif table_to_view.get("phase") == "finished":
+            interval_ms = _adaptive_refresh_interval_ms(
+                state_key=f"blackjack_lan_table_sync_state_{table_id}",
+                signature=table_signature,
+                base_ms=650,
+                min_ms=400,
+                max_ms=1800,
+                ramp_step_ms=160,
+                ramp_limit=7,
+            )
             _schedule_non_blocking_rerun(
-                800,
+                interval_ms,
                 key=f"blackjack_lan_finished_autorefresh_{table_id}",
             )
         return
