@@ -462,6 +462,27 @@ def _schedule_non_blocking_rerun(interval_ms, key):
             return
         except Exception:
             pass
+    safe_key = json.dumps(str(key))
+    safe_interval = max(250, int(interval_ms))
+    components.html(
+        f"""
+        <script>
+        (function() {{
+          const timerKey = {safe_key};
+          const timers = (window.parent.__gamblyRefreshTimers = window.parent.__gamblyRefreshTimers || {{}});
+          if (timers[timerKey]) return;
+          timers[timerKey] = window.setTimeout(function() {{
+            try {{
+              delete timers[timerKey];
+            }} catch (e) {{}}
+            window.parent.location.reload();
+          }}, {safe_interval});
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def _svg_background_uri(svg: str) -> str:
@@ -3673,7 +3694,29 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
     if timer_seconds is not None:
         timer_value = max(0, int(timer_seconds))
         timer_class = "bj-lan-timer bj-lan-timer-danger" if timer_value <= 10 else "bj-lan-timer"
-        timer_html = f'<div class="{timer_class}">TIME: {timer_value}s</div>'
+        timer_elem_id = f"bj-lan-timer-{int(table.get('id', 0))}"
+        timer_html = (
+            f'<div id="{timer_elem_id}" class="{timer_class}" data-start-seconds="{timer_value}">TIME: {timer_value}s</div>'
+            "<script>"
+            "(function(){"
+            f"const el=document.getElementById('{timer_elem_id}');"
+            "if(!el){return;}"
+            "const startVal=parseInt(el.getAttribute('data-start-seconds')||'0',10);"
+            "const started=Date.now();"
+            "if(el.__bjTimerInterval){clearInterval(el.__bjTimerInterval);}"
+            "const tick=function(){"
+            "const elapsed=Math.floor((Date.now()-started)/1000);"
+            "const remaining=Math.max(0,startVal-elapsed);"
+            "el.textContent='TIME: '+remaining+'s';"
+            "if(remaining<=10){el.classList.add('bj-lan-timer-danger');}"
+            "else{el.classList.remove('bj-lan-timer-danger');}"
+            "if(remaining<=0){clearInterval(el.__bjTimerInterval);el.__bjTimerInterval=null;}"
+            "};"
+            "tick();"
+            "el.__bjTimerInterval=setInterval(tick,250);"
+            "})();"
+            "</script>"
+        )
 
     table_html = (
         '<div class="bj-lan-wrap bj-lan-ring">'
@@ -4367,8 +4410,23 @@ def blackjack_ui():
             and seconds_left > 0
         ):
             _schedule_non_blocking_rerun(
-                1000,
+                700,
                 key=f"blackjack_lan_timer_autorefresh_{table_id}",
+            )
+        elif table_to_view.get("phase") == "player_turns" and bool(table_to_view.get("in_progress")):
+            _schedule_non_blocking_rerun(
+                900,
+                key=f"blackjack_lan_turns_autorefresh_{table_id}",
+            )
+        elif table_to_view.get("phase") in {"waiting_for_bets", "waiting_for_players"}:
+            _schedule_non_blocking_rerun(
+                1800,
+                key=f"blackjack_lan_lobby_autorefresh_{table_id}",
+            )
+        elif table_to_view.get("phase") == "finished":
+            _schedule_non_blocking_rerun(
+                1400,
+                key=f"blackjack_lan_finished_autorefresh_{table_id}",
             )
         return
 
