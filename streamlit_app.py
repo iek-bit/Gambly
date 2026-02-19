@@ -4020,6 +4020,8 @@ def _poker_card_text(card):
     if not isinstance(card, str) or len(card) < 2:
         return "?"
     rank = card[0]
+    if rank == "T":
+        rank = "10"
     suit = card[1].upper()
     suit_map = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
     symbol = suit_map.get(suit, suit)
