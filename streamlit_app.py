@@ -4919,6 +4919,207 @@ def _poker_single_record_net(account, net_delta):
         add_account_value(account, float(net_delta))
 
 
+def _ensure_poker_shared_styles():
+    st.markdown(
+        """
+        <style>
+        .pk-table-wrap {
+            margin: 0.25rem 0 0.55rem 0;
+            border-radius: 14px;
+            padding: 0.62rem;
+            background: linear-gradient(160deg, rgba(18, 70, 58, 0.82), rgba(8, 34, 29, 0.88));
+            border: 1px solid rgba(166, 226, 203, 0.3);
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+        }
+        .pk-felt {
+            border-radius: 14px;
+            padding: 0.55rem;
+            background: radial-gradient(ellipse at center, rgba(30, 105, 86, 0.74) 0%, rgba(13, 58, 47, 0.88) 64%, rgba(7, 36, 30, 0.92) 100%);
+            border: 1px solid rgba(189, 234, 220, 0.2);
+        }
+        .pk-head {
+            display: flex;
+            gap: 0.45rem;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 0.4rem;
+        }
+        .pk-pill {
+            border-radius: 999px;
+            padding: 0.12rem 0.5rem;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            color: rgba(236, 253, 246, 0.98);
+            background: rgba(8, 40, 33, 0.56);
+            border: 1px solid rgba(196, 238, 224, 0.22);
+        }
+        .pk-board {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.26rem;
+            min-height: 74px;
+            margin-bottom: 0.42rem;
+        }
+        .pk-players {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.38rem;
+        }
+        .pk-seat {
+            border-radius: 11px;
+            padding: 0.36rem 0.42rem 0.42rem 0.42rem;
+            background: rgba(7, 34, 29, 0.5);
+            border: 1px solid rgba(176, 230, 214, 0.18);
+            text-align: center;
+        }
+        .pk-seat-turn {
+            border-color: rgba(255, 223, 127, 0.86);
+            box-shadow: 0 0 0 1px rgba(255, 228, 147, 0.42);
+        }
+        .pk-seat-self {
+            border-color: rgba(149, 228, 255, 0.78);
+            box-shadow: 0 0 0 1px rgba(135, 210, 236, 0.34);
+        }
+        .pk-name {
+            font-size: 0.82rem;
+            font-weight: 760;
+            color: rgba(233, 252, 245, 0.96);
+            margin-bottom: 0.16rem;
+        }
+        .pk-meta {
+            font-size: 0.72rem;
+            color: rgba(216, 243, 232, 0.9);
+            margin-bottom: 0.18rem;
+        }
+        .pk-cards {
+            display: flex;
+            justify-content: center;
+            gap: 0.22rem;
+            min-height: 64px;
+        }
+        .pk-card {
+            width: 44px;
+            height: 62px;
+            border-radius: 7px;
+            border: 1px solid rgba(182, 210, 201, 0.88);
+            background: linear-gradient(178deg, #fff 0%, #f3f8f5 100%);
+            color: #143229;
+            box-shadow: 0 5px 10px rgba(0, 0, 0, 0.22);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.9rem;
+        }
+        .pk-card-red { color: #a32237; }
+        .pk-card-back {
+            border-color: rgba(159, 216, 198, 0.52);
+            color: rgba(229, 247, 240, 0.92);
+            background: repeating-linear-gradient(
+                45deg,
+                #124352,
+                #124352 6px,
+                #1f6371 6px,
+                #1f6371 12px
+            );
+            font-size: 0.76rem;
+            letter-spacing: 0.03em;
+        }
+        .pk-empty {
+            min-height: 62px;
+            min-width: 72px;
+            border-radius: 8px;
+            border: 1px dashed rgba(191, 234, 220, 0.34);
+            color: rgba(215, 244, 232, 0.8);
+            font-size: 0.72rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.2rem 0.35rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _poker_card_text(card):
+    if not isinstance(card, str) or len(card) < 2:
+        return "?"
+    rank = card[0]
+    suit = card[1].upper()
+    suit_map = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
+    symbol = suit_map.get(suit, suit)
+    return f"{rank}{symbol}"
+
+
+def _poker_render_cards_html(cards):
+    if not cards:
+        return "<div class='pk-empty'>No cards</div>"
+    chunks = []
+    for card in cards:
+        if card == "??":
+            chunks.append("<div class='pk-card pk-card-back'>BACK</div>")
+            continue
+        text = _poker_card_text(card)
+        color = " pk-card-red" if ("♥" in text or "♦" in text) else ""
+        chunks.append(f"<div class='pk-card{color}'>{text}</div>")
+    return "".join(chunks)
+
+
+def render_poker_table_view(public_state, viewer_name):
+    _ensure_poker_shared_styles()
+    street = str(public_state.get("street", "")).title()
+    pot = float(public_state.get("pot", 0.0))
+    current_bet = float(public_state.get("current_bet", 0.0))
+    acting = str(public_state.get("acting_player", ""))
+    board_html = _poker_render_cards_html(public_state.get("board", []))
+    players_html = []
+    for player in public_state.get("players", []):
+        classes = ["pk-seat"]
+        if player.get("name") == acting:
+            classes.append("pk-seat-turn")
+        if player.get("name") == viewer_name:
+            classes.append("pk-seat-self")
+        state_bits = []
+        if player.get("folded"):
+            state_bits.append("FOLDED")
+        if player.get("all_in"):
+            state_bits.append("ALL-IN")
+        meta = (
+            f"Stack ${format_money(player.get('stack', 0.0))} • "
+            f"Committed ${format_money(player.get('committed_total', 0.0))}"
+        )
+        if state_bits:
+            meta = f"{meta} • {'/'.join(state_bits)}"
+        players_html.append(
+            "<div class='"
+            + " ".join(classes)
+            + "'>"
+            + f"<div class='pk-name'>{player.get('name')}</div>"
+            + f"<div class='pk-meta'>{meta}</div>"
+            + f"<div class='pk-cards'>{_poker_render_cards_html(player.get('hole', []))}</div>"
+            + "</div>"
+        )
+    players_block = "".join(players_html) if players_html else "<div class='pk-empty'>No players</div>"
+    html = (
+        "<div class='pk-table-wrap'><div class='pk-felt'>"
+        + "<div class='pk-head'>"
+        + f"<span class='pk-pill'>Street: {street or '-'}</span>"
+        + f"<span class='pk-pill'>Pot: ${format_money(pot)}</span>"
+        + f"<span class='pk-pill'>Current Bet: ${format_money(current_bet)}</span>"
+        + f"<span class='pk-pill'>Turn: {acting or '-'}</span>"
+        + "</div>"
+        + f"<div class='pk-board'>{board_html}</div>"
+        + f"<div class='pk-players'>{players_block}</div>"
+        + "</div></div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def render_poker_single_player(account):
     round_state = st.session_state.get("poker_single_state")
     if not isinstance(round_state, dict):
@@ -4979,15 +5180,7 @@ def render_poker_single_player(account):
     _poker_single_player_run_bots(round_state)
     hand_state = round_state.get("hand_state")
     public = poker_state_to_public(hand_state, viewer_name="You", reveal_all=hand_state.get("street") == "finished")
-    st.caption(
-        f"Street: {public['street'].title()} | Pot: ${format_money(public['pot'])} | Current bet: ${format_money(public['current_bet'])}"
-    )
-    st.write(f"Board: {' '.join(public.get('board', [])) or '-'}")
-    for player in public.get("players", []):
-        turn_badge = " (TURN)" if public.get("acting_player") == player["name"] else ""
-        st.write(
-            f"{player['name']}{turn_badge} | Stack ${format_money(player['stack'])} | Cards: {' '.join(player['hole'])}"
-        )
+    render_poker_table_view(public, "You")
 
     if hand_state.get("street") != "finished":
         legal = poker_legal_actions(hand_state, "You")
@@ -4998,6 +5191,7 @@ def render_poker_single_player(account):
             st.session_state["poker_single_state"] = round_state
             _fast_rerun(force=True)
             return
+        st.markdown("### Your Action")
         bet_amount = None
         raise_amount = None
         if "bet" in actions:
@@ -5189,19 +5383,12 @@ def render_poker_multiplayer(account):
         viewer_name=account,
         reveal_all=bool(is_spectator or hand_state.get("street") == "finished"),
     )
-    st.caption(
-        f"Street: {public['street'].title()} | Pot ${format_money(public['pot'])} | Current bet ${format_money(public['current_bet'])}"
-    )
-    st.write(f"Board: {' '.join(public.get('board', [])) or '-'}")
-    for player in public.get("players", []):
-        turn_badge = " (TURN)" if public.get("acting_player") == player["name"] else ""
-        st.write(
-            f"{player['name']}{turn_badge} | Stack ${format_money(player['stack'])} | Cards {' '.join(player['hole'])}"
-        )
+    render_poker_table_view(public, account)
     if (not is_spectator) and hand_state.get("street") != "finished":
         legal = poker_legal_actions(hand_state, account)
         actions = legal.get("actions", [])
         if actions:
+            st.markdown("### Your Action")
             bet_amount = None
             raise_amount = None
             if "bet" in actions:
