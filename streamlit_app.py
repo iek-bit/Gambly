@@ -1,6 +1,6 @@
 """Streamlit frontend for the Number Guessing Gambling Game."""
 
-from random import randint, shuffle
+from random import randint, shuffle, sample
 import uuid
 import time
 import math
@@ -16,6 +16,7 @@ from money_utils import format_money, house_round_charge, house_round_credit
 from poker_bots import choose_bot_action
 from poker_engine import apply_action as poker_apply_action
 from poker_engine import create_hand as poker_create_hand
+from poker_engine import evaluate_best_seven as poker_evaluate_best_seven
 from poker_engine import legal_actions as poker_legal_actions
 from poker_engine import state_to_public as poker_state_to_public
 
@@ -5216,6 +5217,102 @@ def render_poker_table_view(public_state, viewer_name):
     st.markdown(html, unsafe_allow_html=True)
 
 
+def _poker_estimated_win_chance(public_state, viewer_name, simulations=180):
+    if not isinstance(public_state, dict) or not viewer_name:
+        return None
+    players = list(public_state.get("players", []))
+    viewer = next((player for player in players if player.get("name") == viewer_name), None)
+    if not isinstance(viewer, dict):
+        return None
+    hole_cards = list(viewer.get("hole", []))
+    if len(hole_cards) != 2 or any(card == "??" for card in hole_cards):
+        return None
+
+    live_opponents = [
+        player
+        for player in players
+        if player.get("name") != viewer_name and (not bool(player.get("folded", False)))
+    ]
+    if not live_opponents:
+        return 100.0
+
+    board_cards = [card for card in public_state.get("board", []) if card != "??"]
+    if len(board_cards) > 5:
+        board_cards = board_cards[:5]
+    needed_board = 5 - len(board_cards)
+    opponent_count = len(live_opponents)
+
+    all_cards = [f"{rank}{suit}" for suit in "SHDC" for rank in "23456789TJQKA"]
+    seen = set(hole_cards + board_cards)
+    deck = [card for card in all_cards if card not in seen]
+    cards_needed = needed_board + (opponent_count * 2)
+    if cards_needed > len(deck):
+        return None
+
+    signature = (
+        str(viewer_name),
+        str(public_state.get("street", "")),
+        tuple(board_cards),
+        tuple(hole_cards),
+        tuple(sorted(str(player.get("name", "")) for player in live_opponents)),
+    )
+    cached = st.session_state.get("poker_win_estimate_cache")
+    if isinstance(cached, dict) and cached.get("signature") == signature:
+        return float(cached.get("value"))
+
+    total_share = 0.0
+    runs = max(60, min(400, int(simulations)))
+    for _ in range(runs):
+        draw = sample(deck, cards_needed)
+        draw_index = 0
+        completed_board = list(board_cards)
+        if needed_board > 0:
+            completed_board.extend(draw[draw_index : draw_index + needed_board])
+            draw_index += needed_board
+        viewer_score = poker_evaluate_best_seven(hole_cards + completed_board)
+
+        opponent_scores = []
+        for _opponent in live_opponents:
+            opp_hole = draw[draw_index : draw_index + 2]
+            draw_index += 2
+            opponent_scores.append(poker_evaluate_best_seven(opp_hole + completed_board))
+
+        if not opponent_scores:
+            total_share += 1.0
+            continue
+        best_opponent = max(opponent_scores)
+        if viewer_score > best_opponent:
+            total_share += 1.0
+        elif viewer_score == best_opponent:
+            tie_count = sum(1 for score in opponent_scores if score == viewer_score) + 1
+            total_share += 1.0 / float(tie_count)
+
+    estimate = (total_share / float(runs)) * 100.0
+    st.session_state["poker_win_estimate_cache"] = {"signature": signature, "value": float(estimate)}
+    return float(estimate)
+
+
+def render_poker_analytics_sidebar(public_state, account, viewer_name):
+    estimate = _poker_estimated_win_chance(public_state, viewer_name)
+    poker_stats = get_account_stats(account, "poker") if account else None
+
+    with st.sidebar:
+        st.markdown("### Poker Stats")
+        if estimate is None:
+            st.metric("Estimated win chance", "N/A")
+        else:
+            st.metric("Estimated win chance", f"{estimate:.1f}%")
+        if poker_stats is None:
+            st.caption("Sign in to track persistent poker stats.")
+            return
+        rounds_played = int(poker_stats.get("rounds_played", 0))
+        win_rate = float(poker_stats.get("current_win_percentage", 0.0))
+        net = float(poker_stats.get("total_game_net", 0.0))
+        st.metric("Hands played", str(rounds_played))
+        st.metric("Win rate", f"{win_rate:.1f}%")
+        st.metric("Poker P/L", f"${format_money(net)}")
+
+
 def render_poker_single_player(account):
     round_state = st.session_state.get("poker_single_state")
     if not isinstance(round_state, dict):
@@ -5276,6 +5373,7 @@ def render_poker_single_player(account):
     _poker_single_player_run_bots(round_state)
     hand_state = round_state.get("hand_state")
     public = poker_state_to_public(hand_state, viewer_name="You", reveal_all=hand_state.get("street") == "finished")
+    render_poker_analytics_sidebar(public, account, "You")
     render_poker_table_view(public, "You")
 
     if hand_state.get("street") != "finished":
@@ -5342,6 +5440,7 @@ def render_poker_multiplayer(account):
     perf_token = _perf_start("poker_multiplayer_total")
     if not account:
         st.warning("Sign in to play multiplayer poker.")
+        render_poker_analytics_sidebar(None, None, None)
         _perf_end(perf_token)
         return
     load_token = _perf_start("poker_multiplayer_load_snapshots")
@@ -5445,6 +5544,7 @@ def render_poker_multiplayer(account):
         is_spectator = True
     if table_to_view is None:
         st.warning("Table not found.")
+        render_poker_analytics_sidebar(None, account, account)
         _perf_end(perf_token)
         return
 
@@ -5466,6 +5566,7 @@ def render_poker_multiplayer(account):
             _fast_rerun(force=True)
 
     if not bool(table_to_view.get("in_progress", False)):
+        render_poker_analytics_sidebar(None, account, account)
         if (not is_spectator) and account in table_to_view.get("players", []):
             ready_now = bool(table_to_view.get("player_states", {}).get(account, {}).get("ready", False))
             if st.button("Set ready" if not ready_now else "Set not ready", key=f"poker_ready_{table_id}", use_container_width=True):
@@ -5498,6 +5599,7 @@ def render_poker_multiplayer(account):
         viewer_name=account,
         reveal_all=bool(is_spectator or hand_state.get("street") == "finished"),
     )
+    render_poker_analytics_sidebar(public, account, account)
     render_token = _perf_start("poker_multiplayer_render_table")
     render_poker_table_view(public, account)
     _perf_end(render_token)
