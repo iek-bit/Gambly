@@ -5,7 +5,6 @@ import uuid
 import time
 import math
 import re
-import json
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -459,27 +458,9 @@ def _schedule_non_blocking_rerun(interval_ms, key):
             return
         except Exception:
             pass
-    safe_key = json.dumps(str(key))
-    safe_interval = max(250, int(interval_ms))
-    components.html(
-        f"""
-        <script>
-        (function() {{
-          const timerKey = {safe_key};
-          const timers = (window.parent.__gamblyRefreshTimers = window.parent.__gamblyRefreshTimers || {{}});
-          if (timers[timerKey]) return;
-          timers[timerKey] = window.setTimeout(function() {{
-            try {{
-              delete timers[timerKey];
-            }} catch (e) {{}}
-            window.parent.location.reload();
-          }}, {safe_interval});
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+    # Do not hard-reload as a fallback; full page reload can reset UI state
+    # and kick users back to Home in some environments.
+    return
 
 
 def _svg_background_uri(svg: str) -> str:
@@ -1314,8 +1295,7 @@ def _render_storage_unavailable_notice():
     if not st.session_state.get("storage_unavailable", False):
         return
     st.warning(
-        "Account storage is temporarily unavailable. Sign-in and saved accounts are disabled right now, "
-        "but Guest mode still works."
+        "Unable to sign in right now because account storage is unavailable."
     )
 
 
@@ -1730,7 +1710,7 @@ def render_back_button():
 
 def auth_ui():
     if st.session_state.get("storage_unavailable", False):
-        st.error("Sign-in and account creation are temporarily unavailable. Please use Guest mode.")
+        st.error("Unable to sign in or create an account right now. Please try again shortly.")
         return
     st.subheader("Sign In / Create Account")
     flow_mode = st.session_state.get("auth_flow_mode")

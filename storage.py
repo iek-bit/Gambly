@@ -1,8 +1,6 @@
 """Persistent storage helpers for accounts and odds."""
 
 import json
-import os
-import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -15,7 +13,6 @@ from urllib import request as urllib_request
 from money_utils import house_round_balance, house_round_credit, house_round_delta
 
 DEFAULT_ODDS = 1.5
-ACCOUNTS_FILE = "accounts.json"
 ODDS_ACCOUNT_KEY = "__house_odds__"
 GAME_STAT_KEYS = {"player_guess", "computer_guess", "blackjack"}
 DEFAULT_ACCOUNT_SESSION_TTL_SECONDS = 6 * 60 * 60
@@ -37,17 +34,6 @@ BLACKJACK_LAN_PHASE_WAITING_FOR_PLAYERS = "waiting_for_players"
 BLACKJACK_LAN_PHASE_WAITING_FOR_BETS = "waiting_for_bets"
 BLACKJACK_LAN_PHASE_PLAYER_TURNS = "player_turns"
 BLACKJACK_LAN_PHASE_FINISHED = "finished"
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows-only fallback
-    fcntl = None
-
-try:
-    import msvcrt
-except ImportError:  # pragma: no cover - POSIX-only fallback
-    msvcrt = None
-
 
 SUPABASE_TABLE_DEFAULT = "app_state"
 SUPABASE_STATE_ROW_ID = 1
@@ -1203,6 +1189,7 @@ def _load_streamlit_secret(name):
 
 
 def _resolve_secret(name):
+    import os
     value = os.getenv(name)
     if value is not None and str(value).strip():
         return str(value).strip()
@@ -1230,20 +1217,13 @@ def _get_storage_backend():
             "table": supabase_table,
         }
     else:
-        _storage_backend_cache = {"type": "local"}
+        raise RuntimeError("Supabase is not configured. Account storage is unavailable.")
     return _storage_backend_cache
 
 
 def _invalidate_state_read_cache():
     global _state_read_cache
     _state_read_cache = None
-
-
-def _get_local_accounts_mtime_unlocked():
-    try:
-        return os.path.getmtime(ACCOUNTS_FILE)
-    except FileNotFoundError:
-        return None
 
 
 def _is_cached_state_valid_unlocked(backend):
@@ -1253,8 +1233,6 @@ def _is_cached_state_valid_unlocked(backend):
     backend_type = backend.get("type")
     if cached_backend_type != backend_type:
         return False
-    if backend_type == "local":
-        return _state_read_cache.get("local_mtime") == _get_local_accounts_mtime_unlocked()
     if backend_type == "supabase":
         loaded_epoch = float(_state_read_cache.get("loaded_epoch", 0.0))
         return (time.time() - loaded_epoch) <= _SUPABASE_READ_CACHE_TTL_SECONDS
@@ -1267,7 +1245,7 @@ def _set_state_read_cache_unlocked(backend, data):
     _state_read_cache = {
         "backend_type": backend_type,
         "loaded_epoch": time.time(),
-        "local_mtime": _get_local_accounts_mtime_unlocked() if backend_type == "local" else None,
+        "local_mtime": None,
         "data": deepcopy(data),
     }
 
@@ -1336,81 +1314,16 @@ def _write_supabase_state_unlocked(data):
     )
 
 
-def _read_local_data_unlocked():
-    with open(ACCOUNTS_FILE, "r") as file:
-        loaded = json.load(file)
-    if not isinstance(loaded, dict):
-        raise ValueError("JSON root must be an object.")
-    return loaded
-
-
-def _lock_file(lock_file):
-    if fcntl is not None:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        return
-    if msvcrt is not None:  # pragma: no cover - Windows-only fallback
-        lock_file.seek(0, os.SEEK_SET)
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-        return
-    raise RuntimeError("No file locking mechanism available on this platform.")
-
-
-def _unlock_file(lock_file):
-    if fcntl is not None:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        return
-    if msvcrt is not None:  # pragma: no cover - Windows-only fallback
-        lock_file.seek(0, os.SEEK_SET)
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-        return
-    raise RuntimeError("No file locking mechanism available on this platform.")
-
-
 @contextmanager
 def _accounts_write_lock():
-    backend = _get_storage_backend()
-    if backend.get("type") == "supabase":
-        with _in_process_write_lock:
-            yield
-        return
-
-    lock_path = f"{ACCOUNTS_FILE}.lock"
-    lock_dir = os.path.dirname(os.path.abspath(lock_path))
-    os.makedirs(lock_dir, exist_ok=True)
-
-    with open(lock_path, "a+") as lock_file:
-        if msvcrt is not None and fcntl is None:  # pragma: no cover - Windows-only fallback
-            lock_file.seek(0, os.SEEK_END)
-            if lock_file.tell() == 0:
-                lock_file.write("0")
-                lock_file.flush()
-        _lock_file(lock_file)
-        try:
-            yield
-        finally:
-            _unlock_file(lock_file)
+    _get_storage_backend()
+    with _in_process_write_lock:
+        yield
 
 
 def _write_data_unlocked(data):
-    backend = _get_storage_backend()
-    if backend.get("type") == "supabase":
-        _write_supabase_state_unlocked(data)
-        _invalidate_state_read_cache()
-        return
-
-    destination = os.path.abspath(ACCOUNTS_FILE)
-    destination_dir = os.path.dirname(destination) or "."
-    os.makedirs(destination_dir, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=".accounts-", suffix=".tmp", dir=destination_dir)
-    try:
-        with os.fdopen(fd, "w") as file:
-            json.dump(data, file, indent=2, sort_keys=True)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temp_path, destination)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    _get_storage_backend()
+    _write_supabase_state_unlocked(data)
     _invalidate_state_read_cache()
 
 
@@ -1510,20 +1423,14 @@ def _load_data_unlocked(use_cache=True):
         # deep-copying the full app state on every read helper call.
         return _state_read_cache.get("data")
     try:
-        if backend.get("type") == "supabase":
-            loaded = _read_supabase_state_unlocked()
-            if loaded is None:
-                _set_state_read_cache_unlocked(backend, None)
-                return None
-            normalized = _normalize_loaded_data(loaded)
-            _set_state_read_cache_unlocked(backend, normalized)
-            return normalized
-        else:
-            loaded = _read_local_data_unlocked()
+        loaded = _read_supabase_state_unlocked()
+        if loaded is None:
+            _set_state_read_cache_unlocked(backend, None)
+            return None
         normalized = _normalize_loaded_data(loaded)
         _set_state_read_cache_unlocked(backend, normalized)
         return normalized
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError):
         _set_state_read_cache_unlocked(backend, None)
         return None
 
