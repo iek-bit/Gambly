@@ -438,6 +438,11 @@ def _fragment_or_passthrough(func):
     return func
 
 
+def _run_ui_fragment(func, *args, **kwargs):
+    fragment_callable = _fragment_or_passthrough(func)
+    return fragment_callable(*args, **kwargs)
+
+
 def _fast_rerun(force=False):
     rerun_func = getattr(st, "rerun", None)
     if not callable(rerun_func):
@@ -2846,9 +2851,9 @@ def play_game_ui():
         return
 
     if selected_mode == "You guess the number":
-        player_guesses_game_ui(account, is_guest_mode)
+        _run_ui_fragment(player_guesses_game_ui, account, is_guest_mode)
     else:
-        computer_guesses_game_ui(account, is_guest_mode)
+        _run_ui_fragment(computer_guesses_game_ui, account, is_guest_mode)
 
     if is_guest_mode:
         guest_balance = float(st.session_state.get("guest_balance", 0.0))
@@ -3788,6 +3793,237 @@ def render_blackjack_lan_hands(table, viewer_player=None, guest_alias_map=None, 
         render_blackjack_lan_timer_client_sync(timer_element_id, timer_value)
 
 
+def render_blackjack_single_player_mode(account, guest_mode_active):
+    if account is None and not guest_mode_active:
+        if not st.session_state.get("blackjack_guest_mode_setup", False):
+            st.warning("You are not signed in. Do you want to play blackjack in guest mode?")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Yes, play as guest", key="blackjack_guest_mode_yes", use_container_width=True):
+                    st.session_state["blackjack_guest_mode_setup"] = True
+                    _fast_rerun()
+            return
+
+        with st.form("blackjack_guest_mode_setup_form"):
+            guest_buy_in = st.number_input(
+                "How much money do you want to play with?",
+                min_value=0.0,
+                value=20.0,
+                step=1.0,
+                format="%.2f",
+                key="blackjack_guest_mode_starting_balance",
+            )
+            guest_submitted = st.form_submit_button("Start guest mode")
+        if not guest_submitted:
+            return
+        st.session_state["guest_balance"] = float(guest_buy_in)
+        st.session_state["guest_mode_active"] = True
+        st.session_state["blackjack_guest_mode_setup"] = False
+        st.session_state["blackjack_guest_total_net"] = 0.0
+        st.success(f"Guest mode started with ${format_money(guest_buy_in)}.")
+        _fast_rerun()
+
+    is_guest_mode = account is None and st.session_state.get("guest_mode_active", False)
+    if account is not None:
+        st.session_state["blackjack_guest_mode_setup"] = False
+
+    round_state = st.session_state.get("blackjack_round")
+    if round_state:
+        if bool(round_state.get("guest_mode", False)) != bool(is_guest_mode):
+            st.session_state["blackjack_round"] = None
+            round_state = None
+        elif (not is_guest_mode) and round_state.get("account") != account:
+            st.session_state["blackjack_round"] = None
+            round_state = None
+
+    if is_guest_mode:
+        balance = float(st.session_state.get("guest_balance", 0.0))
+    else:
+        balance = get_account_value(account)
+        if balance is None:
+            st.error("Account not found.")
+            return
+
+    if is_guest_mode:
+        st.info(f"Guest balance: ${format_money(balance)}")
+    else:
+        st.info(f"Current balance: ${format_money(balance)}")
+
+    if round_state is None:
+        current_limits = load_game_limits()
+        bet_input = st.number_input(
+            "Bet amount ($)",
+            min_value=0.01,
+            step=0.01,
+            format="%.2f",
+            key="blackjack_setup_bet",
+        )
+        bet = house_round_charge(float(bet_input))
+
+        # Check game limits (for blackjack, only buy_in limit applies)
+        is_valid, limit_errors = _check_game_limits(1, bet, 1, limits=current_limits)  # range=1, guesses=1
+        if not is_valid:
+            # Only show buy_in limit error for blackjack
+            for error in limit_errors:
+                if "Buy-in" in error or "buy-in" in error:
+                    st.error(error)
+
+        setup_confirmed = True
+        if is_bet_confirmation_enabled():
+            st.caption(f"You are about to bet ${format_money(bet)}.")
+            setup_confirmed = st.checkbox("I confirm this bet", key="blackjack_setup_bet_confirm")
+
+        if st.button("Deal cards", key="blackjack_deal_cards", use_container_width=True):
+            if is_bet_confirmation_enabled() and not setup_confirmed:
+                st.warning("Confirm your bet before dealing.")
+                return
+
+            # Final validation check before dealing
+            is_valid, limit_errors = _check_game_limits(1, bet, 1, limits=current_limits)
+            if not is_valid:
+                for error in limit_errors:
+                    if "Buy-in" in error or "buy-in" in error:
+                        st.error(error)
+                return
+
+            if is_guest_mode:
+                if float(st.session_state.get("guest_balance", 0.0)) < float(bet):
+                    st.error("Not enough guest funds to cover this bet.")
+                    return
+            elif not can_afford_account_charge(account, bet):
+                st.warning("Insufficient funds. Negative balance is disabled in settings.")
+                st.session_state["blackjack_pending_bet"] = float(bet)
+                return
+            started_round, error = start_blackjack_round(account, bet, is_guest_mode)
+            if error:
+                st.error(error)
+                return
+            st.session_state["blackjack_pending_bet"] = None
+            st.session_state["blackjack_pending_replay_bet"] = None
+            st.session_state["blackjack_round"] = started_round
+            _fast_rerun()
+
+        pending_bet = st.session_state.get("blackjack_pending_bet")
+        if pending_bet and (not is_guest_mode) and (not is_debt_allowed()):
+            if st.button("Enable negative balance and deal cards", key="blackjack_enable_debt_start"):
+                st.session_state["setting_allow_negative_balance"] = True
+                _persist_ui_settings_for_current_account()
+                started_round, error = start_blackjack_round(account, float(pending_bet), False)
+                if error:
+                    st.error(error)
+                    return
+                st.session_state["blackjack_pending_bet"] = None
+                st.session_state["blackjack_pending_replay_bet"] = None
+                st.session_state["blackjack_round"] = started_round
+                _fast_rerun()
+        return
+
+    player_total = blackjack_hand_total(round_state["player_cards"])
+    dealer_total = blackjack_hand_total(round_state["dealer_cards"])
+    render_blackjack_analytics_sidebar(round_state, account, is_guest_mode)
+    st.write(f"Bet: ${format_money(round_state['bet'])}")
+    render_blackjack_table(round_state)
+    round_state["animate_player_indexes"] = []
+    round_state["animate_dealer_indexes"] = []
+
+    if round_state["status"] == "player_turn":
+        if len(round_state["dealer_cards"]) > 1:
+            dealer_up_total = blackjack_hand_total(round_state["dealer_cards"][1:])
+            st.caption(f"Dealer showing: {dealer_up_total}+")
+        st.caption(f"Your total: {player_total}")
+
+        hit_col, stand_col = st.columns(2)
+        with hit_col:
+            if st.button("Hit", key="blackjack_hit", use_container_width=True):
+                round_state["player_cards"].append(blackjack_draw_card(round_state))
+                round_state["animate_player_indexes"] = [len(round_state["player_cards"]) - 1]
+                round_state["animate_dealer_indexes"] = []
+                latest_card = round_state["player_cards"][-1]
+                round_state.setdefault("history", []).append(
+                    f"You hit and drew {blackjack_format_hand([latest_card])}."
+                )
+                updated_total = blackjack_hand_total(round_state["player_cards"])
+                if updated_total > 21:
+                    error = settle_blackjack_round(
+                        account,
+                        round_state,
+                        "loss",
+                        f"You busted with {updated_total}. You lose this round.",
+                        is_guest_mode,
+                    )
+                    if error:
+                        st.error(error)
+                        return
+                elif updated_total == 21:
+                    error = run_blackjack_dealer_turn(account, round_state, is_guest_mode)
+                    if error:
+                        st.error(error)
+                        return
+                _fast_rerun()
+        with stand_col:
+            if st.button("Stand", key="blackjack_stand", use_container_width=True):
+                round_state.setdefault("history", []).append("You stood.")
+                error = run_blackjack_dealer_turn(account, round_state, is_guest_mode)
+                if error:
+                    st.error(error)
+                    return
+                _fast_rerun()
+        return
+
+    st.caption(f"Dealer total: {dealer_total} | Your total: {player_total}")
+
+    result = round_state.get("result")
+    message = round_state.get("message", "")
+    if result in {"win", "blackjack"}:
+        st.success(message)
+    elif result == "push":
+        st.info(message)
+    else:
+        st.error(message)
+    st.caption(f"Payout credited: ${format_money(round_state.get('payout', 0.0))}")
+
+    replay_col, reset_col = st.columns(2)
+    with replay_col:
+        if st.button("Play again (same bet)", key="blackjack_same_bet", use_container_width=True):
+            replay_bet = float(round_state["bet"])
+            if is_guest_mode:
+                if float(st.session_state.get("guest_balance", 0.0)) < replay_bet:
+                    st.error("Not enough guest funds to play another round.")
+                    return
+            elif not can_afford_account_charge(account, replay_bet):
+                st.warning("Insufficient funds. Negative balance is disabled in settings.")
+                st.session_state["blackjack_pending_replay_bet"] = replay_bet
+                return
+            started_round, error = start_blackjack_round(account, replay_bet, is_guest_mode)
+            if error:
+                st.error(error)
+                return
+            st.session_state["blackjack_pending_bet"] = None
+            st.session_state["blackjack_pending_replay_bet"] = None
+            st.session_state["blackjack_round"] = started_round
+            _fast_rerun()
+    with reset_col:
+        if st.button("Change bet", key="blackjack_change_bet", use_container_width=True):
+            st.session_state["blackjack_pending_bet"] = None
+            st.session_state["blackjack_pending_replay_bet"] = None
+            st.session_state["blackjack_round"] = None
+            _fast_rerun()
+
+    pending_replay_bet = st.session_state.get("blackjack_pending_replay_bet")
+    if pending_replay_bet and (not is_guest_mode) and (not is_debt_allowed()):
+        if st.button("Enable negative balance and replay", key="blackjack_enable_debt_replay"):
+            st.session_state["setting_allow_negative_balance"] = True
+            _persist_ui_settings_for_current_account()
+            started_round, error = start_blackjack_round(account, float(pending_replay_bet), False)
+            if error:
+                st.error(error)
+                return
+            st.session_state["blackjack_pending_bet"] = None
+            st.session_state["blackjack_pending_replay_bet"] = None
+            st.session_state["blackjack_round"] = started_round
+            _fast_rerun()
+
+
 def blackjack_ui():
 
     st.subheader("Blackjack")
@@ -3849,60 +4085,8 @@ def blackjack_ui():
     st.markdown(f"<div style='margin-top: 0.5rem; font-weight: bold; color: var(--text-color);'>Current mode: <span style='color: var(--primary-color);'>{mode}</span></div>", unsafe_allow_html=True)
 
     if mode == "Single Player":
-        if account is None and not guest_mode_active:
-            if not st.session_state.get("blackjack_guest_mode_setup", False):
-                st.warning("You are not signed in. Do you want to play blackjack in guest mode?")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Yes, play as guest", key="blackjack_guest_mode_yes", use_container_width=True):
-                        st.session_state["blackjack_guest_mode_setup"] = True
-                        _fast_rerun()
-                return
-
-            with st.form("blackjack_guest_mode_setup_form"):
-                guest_buy_in = st.number_input(
-                    "How much money do you want to play with?",
-                    min_value=0.0,
-                    value=20.0,
-                    step=1.0,
-                    format="%.2f",
-                    key="blackjack_guest_mode_starting_balance",
-                )
-                guest_submitted = st.form_submit_button("Start guest mode")
-            if not guest_submitted:
-                return
-            st.session_state["guest_balance"] = float(guest_buy_in)
-            st.session_state["guest_mode_active"] = True
-            st.session_state["blackjack_guest_mode_setup"] = False
-            st.session_state["blackjack_guest_total_net"] = 0.0
-            st.success(f"Guest mode started with ${format_money(guest_buy_in)}.")
-            _fast_rerun()
-
-        is_guest_mode = account is None and st.session_state.get("guest_mode_active", False)
-        if account is not None:
-            st.session_state["blackjack_guest_mode_setup"] = False
-
-        round_state = st.session_state.get("blackjack_round")
-        if round_state:
-            if bool(round_state.get("guest_mode", False)) != bool(is_guest_mode):
-                st.session_state["blackjack_round"] = None
-                round_state = None
-            elif (not is_guest_mode) and round_state.get("account") != account:
-                st.session_state["blackjack_round"] = None
-                round_state = None
-
-        if is_guest_mode:
-            balance = float(st.session_state.get("guest_balance", 0.0))
-        else:
-            balance = get_account_value(account)
-            if balance is None:
-                st.error("Account not found.")
-                return
-
-        if is_guest_mode:
-            st.info(f"Guest balance: ${format_money(balance)}")
-        else:
-            st.info(f"Current balance: ${format_money(balance)}")
+        _run_ui_fragment(render_blackjack_single_player_mode, account, guest_mode_active)
+        return
     elif mode == "Multiplayer":
         st.markdown("### Multiplayer Tables")
         if multiplayer_player is None:
@@ -4598,180 +4782,6 @@ def blackjack_ui():
             )
         return
 
-    if round_state is None:
-        current_limits = load_game_limits()
-        bet_input = st.number_input(
-            "Bet amount ($)",
-            min_value=0.01,
-            step=0.01,
-            format="%.2f",
-            key="blackjack_setup_bet",
-        )
-        bet = house_round_charge(float(bet_input))
-        
-        # Check game limits (for blackjack, only buy_in limit applies)
-        is_valid, limit_errors = _check_game_limits(1, bet, 1, limits=current_limits)  # range=1, guesses=1
-        if not is_valid:
-            # Only show buy_in limit error for blackjack
-            for error in limit_errors:
-                if "Buy-in" in error or "buy-in" in error:
-                    st.error(error)
-        
-        setup_confirmed = True
-        if is_bet_confirmation_enabled():
-            st.caption(f"You are about to bet ${format_money(bet)}.")
-            setup_confirmed = st.checkbox("I confirm this bet", key="blackjack_setup_bet_confirm")
-
-        if st.button("Deal cards", key="blackjack_deal_cards", use_container_width=True):
-            if is_bet_confirmation_enabled() and not setup_confirmed:
-                st.warning("Confirm your bet before dealing.")
-                return
-            
-            # Final validation check before dealing
-            is_valid, limit_errors = _check_game_limits(1, bet, 1, limits=current_limits)
-            if not is_valid:
-                for error in limit_errors:
-                    if "Buy-in" in error or "buy-in" in error:
-                        st.error(error)
-                return
-            
-            if is_guest_mode:
-                if float(st.session_state.get("guest_balance", 0.0)) < float(bet):
-                    st.error("Not enough guest funds to cover this bet.")
-                    return
-            elif not can_afford_account_charge(account, bet):
-                st.warning("Insufficient funds. Negative balance is disabled in settings.")
-                st.session_state["blackjack_pending_bet"] = float(bet)
-                return
-            started_round, error = start_blackjack_round(account, bet, is_guest_mode)
-            if error:
-                st.error(error)
-                return
-            st.session_state["blackjack_pending_bet"] = None
-            st.session_state["blackjack_pending_replay_bet"] = None
-            st.session_state["blackjack_round"] = started_round
-            _fast_rerun()
-
-        pending_bet = st.session_state.get("blackjack_pending_bet")
-        if pending_bet and (not is_guest_mode) and (not is_debt_allowed()):
-            if st.button("Enable negative balance and deal cards", key="blackjack_enable_debt_start"):
-                st.session_state["setting_allow_negative_balance"] = True
-                _persist_ui_settings_for_current_account()
-                started_round, error = start_blackjack_round(account, float(pending_bet), False)
-                if error:
-                    st.error(error)
-                    return
-                st.session_state["blackjack_pending_bet"] = None
-                st.session_state["blackjack_pending_replay_bet"] = None
-                st.session_state["blackjack_round"] = started_round
-                _fast_rerun()
-        return
-
-    player_total = blackjack_hand_total(round_state["player_cards"])
-    dealer_total = blackjack_hand_total(round_state["dealer_cards"])
-    render_blackjack_analytics_sidebar(round_state, account, is_guest_mode)
-    st.write(f"Bet: ${format_money(round_state['bet'])}")
-    render_blackjack_table(round_state)
-    round_state["animate_player_indexes"] = []
-    round_state["animate_dealer_indexes"] = []
-
-    if round_state["status"] == "player_turn":
-        if len(round_state["dealer_cards"]) > 1:
-            dealer_up_total = blackjack_hand_total(round_state["dealer_cards"][1:])
-            st.caption(f"Dealer showing: {dealer_up_total}+")
-        st.caption(f"Your total: {player_total}")
-
-        hit_col, stand_col = st.columns(2)
-        with hit_col:
-            if st.button("Hit", key="blackjack_hit", use_container_width=True):
-                round_state["player_cards"].append(blackjack_draw_card(round_state))
-                round_state["animate_player_indexes"] = [len(round_state["player_cards"]) - 1]
-                round_state["animate_dealer_indexes"] = []
-                latest_card = round_state["player_cards"][-1]
-                round_state.setdefault("history", []).append(
-                    f"You hit and drew {blackjack_format_hand([latest_card])}."
-                )
-                updated_total = blackjack_hand_total(round_state["player_cards"])
-                if updated_total > 21:
-                    error = settle_blackjack_round(
-                        account,
-                        round_state,
-                        "loss",
-                        f"You busted with {updated_total}. You lose this round.",
-                        is_guest_mode,
-                    )
-                    if error:
-                        st.error(error)
-                        return
-                elif updated_total == 21:
-                    error = run_blackjack_dealer_turn(account, round_state, is_guest_mode)
-                    if error:
-                        st.error(error)
-                        return
-                _fast_rerun()
-        with stand_col:
-            if st.button("Stand", key="blackjack_stand", use_container_width=True):
-                round_state.setdefault("history", []).append("You stood.")
-                error = run_blackjack_dealer_turn(account, round_state, is_guest_mode)
-                if error:
-                    st.error(error)
-                    return
-                _fast_rerun()
-        return
-
-    st.caption(f"Dealer total: {dealer_total} | Your total: {player_total}")
-
-    result = round_state.get("result")
-    message = round_state.get("message", "")
-    if result in {"win", "blackjack"}:
-        st.success(message)
-    elif result == "push":
-        st.info(message)
-    else:
-        st.error(message)
-    st.caption(f"Payout credited: ${format_money(round_state.get('payout', 0.0))}")
-
-    replay_col, reset_col = st.columns(2)
-    with replay_col:
-        if st.button("Play again (same bet)", key="blackjack_same_bet", use_container_width=True):
-            replay_bet = float(round_state["bet"])
-            if is_guest_mode:
-                if float(st.session_state.get("guest_balance", 0.0)) < replay_bet:
-                    st.error("Not enough guest funds to play another round.")
-                    return
-            elif not can_afford_account_charge(account, replay_bet):
-                st.warning("Insufficient funds. Negative balance is disabled in settings.")
-                st.session_state["blackjack_pending_replay_bet"] = replay_bet
-                return
-            started_round, error = start_blackjack_round(account, replay_bet, is_guest_mode)
-            if error:
-                st.error(error)
-                return
-            st.session_state["blackjack_pending_bet"] = None
-            st.session_state["blackjack_pending_replay_bet"] = None
-            st.session_state["blackjack_round"] = started_round
-            _fast_rerun()
-    with reset_col:
-        if st.button("Change bet", key="blackjack_change_bet", use_container_width=True):
-            st.session_state["blackjack_pending_bet"] = None
-            st.session_state["blackjack_pending_replay_bet"] = None
-            st.session_state["blackjack_round"] = None
-            _fast_rerun()
-
-    pending_replay_bet = st.session_state.get("blackjack_pending_replay_bet")
-    if pending_replay_bet and (not is_guest_mode) and (not is_debt_allowed()):
-        if st.button("Enable negative balance and replay", key="blackjack_enable_debt_replay"):
-            st.session_state["setting_allow_negative_balance"] = True
-            _persist_ui_settings_for_current_account()
-            started_round, error = start_blackjack_round(account, float(pending_replay_bet), False)
-            if error:
-                st.error(error)
-                return
-            st.session_state["blackjack_pending_bet"] = None
-            st.session_state["blackjack_pending_replay_bet"] = None
-            st.session_state["blackjack_round"] = started_round
-            _fast_rerun()
-
 
 def developer_ui():
     if not is_admin_user():
@@ -5334,35 +5344,35 @@ def main():
     render_back_button()
 
     if st.session_state["show_auth_flow"]:
-        auth_ui()
+        _run_ui_fragment(auth_ui)
     elif st.session_state["active_action"] == "Home":
-        home_ui()
+        _run_ui_fragment(home_ui)
 
     if st.session_state["show_auth_flow"]:
         return
 
     if st.session_state["active_action"] == "Look up account":
-        lookup_account_ui()
+        _run_ui_fragment(lookup_account_ui)
     elif st.session_state["active_action"] == "Add/withdraw money":
-        add_withdraw_ui()
+        _run_ui_fragment(add_withdraw_ui)
     elif st.session_state["active_action"] == "Calculate odds":
-        odds_calculator_ui()
+        _run_ui_fragment(odds_calculator_ui)
     elif st.session_state["active_action"] == "Change profile picture":
-        change_profile_picture_ui()
+        _run_ui_fragment(change_profile_picture_ui)
     elif st.session_state["active_action"] == "Change password":
-        change_password_ui()
+        _run_ui_fragment(change_password_ui)
     elif st.session_state["active_action"] == "Leaderboards":
-        leaderboards_ui()
+        _run_ui_fragment(leaderboards_ui)
     elif st.session_state["active_action"] == "Play game":
-        play_game_ui()
+        _run_ui_fragment(play_game_ui)
     elif st.session_state["active_action"] == "Blackjack":
-        blackjack_ui()
+        _run_ui_fragment(blackjack_ui)
     elif st.session_state["active_action"] == "House odds":
-        developer_ui()
+        _run_ui_fragment(developer_ui)
     elif st.session_state["active_action"] == "Game limits":
-        game_limits_ui()
+        _run_ui_fragment(game_limits_ui)
     elif st.session_state["active_action"] == "Account tools":
-        admin_account_tools_ui()
+        _run_ui_fragment(admin_account_tools_ui)
 
 
 if __name__ == "__main__":
