@@ -5127,12 +5127,6 @@ def main():
     apply_theme()
     _render_account_session_notice()
     _render_storage_unavailable_notice()
-    if st.session_state.get("storage_unavailable", False) and st.session_state.get("current_account"):
-        _sign_out_current_account(
-            session_notice="Account storage is temporarily unavailable. You were signed out. Guest mode is still available."
-        )
-        _fast_rerun(force=True)
-        return
     if (
         st.session_state.get("guest_mode_active", False)
         and st.session_state.get("active_action") not in {"Play game", "Blackjack"}
