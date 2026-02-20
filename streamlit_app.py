@@ -1875,6 +1875,11 @@ def render_back_button():
         return
 
     if st.button("Back", key="global_back_home", use_container_width=False):
+        if (
+            st.session_state.get("active_action") == "Poker"
+            and st.session_state.get("poker_mode_select", "Single Player") == "Single Player"
+        ):
+            st.session_state["poker_single_state"] = None
         _remove_active_multiplayer_presence()
         st.session_state["show_auth_flow"] = False
         st.session_state["auth_flow_mode"] = None
