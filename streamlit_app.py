@@ -4272,6 +4272,19 @@ def render_poker_analytics_sidebar(public_state, account, viewer_name):
 
 
 def render_poker_single_player(account):
+    def _safe_number_bounds(min_value, max_value, preferred_value):
+        low = float(min_value)
+        high = float(max_value)
+        # If legal bounds come back inverted, collapse to the safer upper bound.
+        if high < low:
+            low = high
+        value = float(preferred_value)
+        if value < low:
+            value = low
+        if value > high:
+            value = high
+        return low, high, value
+
     def _start_single_player_hand(current_round_state):
         alive_players = [
             (name, float(stack))
@@ -4366,21 +4379,29 @@ def render_poker_single_player(account):
         bet_amount = None
         raise_amount = None
         if "bet" in actions:
+            min_bet = float(legal.get("min_bet", 0.01))
+            max_bet = float(legal.get("max_bet", legal.get("min_bet", 0.01)))
+            min_bet, max_bet, default_bet = _safe_number_bounds(min_bet, max_bet, min_bet)
             bet_amount = st.number_input(
                 "Bet size ($)",
-                min_value=float(legal.get("min_bet", 0.01)),
-                max_value=float(legal.get("max_bet", legal.get("min_bet", 0.01))),
-                value=float(legal.get("min_bet", 0.01)),
+                min_value=min_bet,
+                max_value=max_bet,
+                value=default_bet,
                 step=0.5,
                 format="%.2f",
                 key="poker_single_bet_amount",
             )
         if "raise" in actions:
+            min_raise_to = float(legal.get("min_raise_to", 0.01))
+            max_raise_to = float(legal.get("max_raise_to", legal.get("min_raise_to", 0.01)))
+            min_raise_to, max_raise_to, default_raise = _safe_number_bounds(
+                min_raise_to, max_raise_to, min_raise_to
+            )
             raise_amount = st.number_input(
                 "Raise to ($)",
-                min_value=float(legal.get("min_raise_to", 0.01)),
-                max_value=float(legal.get("max_raise_to", legal.get("min_raise_to", 0.01))),
-                value=float(legal.get("min_raise_to", 0.01)),
+                min_value=min_raise_to,
+                max_value=max_raise_to,
+                value=default_raise,
                 step=0.5,
                 format="%.2f",
                 key="poker_single_raise_amount",
@@ -4652,21 +4673,31 @@ def render_poker_multiplayer(account):
             bet_amount = None
             raise_amount = None
             if "bet" in actions:
+                min_bet = float(legal.get("min_bet", 0.01))
+                max_bet = float(legal.get("max_bet", legal.get("min_bet", 0.01)))
+                if max_bet < min_bet:
+                    min_bet = max_bet
+                default_bet = max(min_bet, min(max_bet, min_bet))
                 bet_amount = st.number_input(
                     "Bet size ($)",
-                    min_value=float(legal.get("min_bet", 0.01)),
-                    max_value=float(legal.get("max_bet", legal.get("min_bet", 0.01))),
-                    value=float(legal.get("min_bet", 0.01)),
+                    min_value=min_bet,
+                    max_value=max_bet,
+                    value=default_bet,
                     step=0.5,
                     format="%.2f",
                     key=f"poker_lan_bet_{table_id}_{account}",
                 )
             if "raise" in actions:
+                min_raise_to = float(legal.get("min_raise_to", 0.01))
+                max_raise_to = float(legal.get("max_raise_to", legal.get("min_raise_to", 0.01)))
+                if max_raise_to < min_raise_to:
+                    min_raise_to = max_raise_to
+                default_raise = max(min_raise_to, min(max_raise_to, min_raise_to))
                 raise_amount = st.number_input(
                     "Raise to ($)",
-                    min_value=float(legal.get("min_raise_to", 0.01)),
-                    max_value=float(legal.get("max_raise_to", legal.get("min_raise_to", 0.01))),
-                    value=float(legal.get("min_raise_to", 0.01)),
+                    min_value=min_raise_to,
+                    max_value=max_raise_to,
+                    value=default_raise,
                     step=0.5,
                     format="%.2f",
                     key=f"poker_lan_raise_{table_id}_{account}",
