@@ -143,6 +143,9 @@ def choose_bot_action(state, player_name, legal_info):
     strength, draw_bonus = _strength_0_100(state, player)
     looseness, aggression = _bot_profile(player_name)
 
+    # Add per-decision noise so bots remain odds-driven but less deterministic.
+    strength = max(0.0, min(100.0, strength + random.uniform(-6.0, 6.0)))
+
     to_call = float(legal_info.get("to_call", 0.0) or 0.0)
     pot = float(state.get("pot", 0.0) or 0.0)
     stack = float(player.get("stack", 0.0) or 0.0)
@@ -159,7 +162,9 @@ def choose_bot_action(state, player_name, legal_info):
 
     if "check" in actions and to_call <= 0:
         if "all_in" in actions and stack > 0 and strength >= (95 - (aggression * 20)):
-            return "all_in", None
+            jam_chance = min(0.72, max(0.25, 0.38 + ((strength - 92.0) / 18.0) + (aggression * 0.9)))
+            if random.random() < jam_chance:
+                return "all_in", None
         if "bet" in actions:
             bluff_factor = max(0.0, min(1.0, 0.12 + aggression + (0.06 if preflop else 0.0)))
             value_threshold = 56 - (aggression * 10) - (draw_bonus * 0.5)
@@ -176,15 +181,21 @@ def choose_bot_action(state, player_name, legal_info):
                 else:
                     pot_mult = 0.55
                 size = max(min_bet, min(max_bet, max(pot * pot_mult, stack * 0.14)))
+                size *= random.uniform(0.82, 1.18)
+                size = max(min_bet, min(max_bet, size))
                 return "bet", round(size, 2)
         return "check", None
 
     if "all_in" in actions and stack > 0:
         # Jam short stacks wider; otherwise reserve for very strong/value-heavy spots.
         if commitment_ratio >= 0.45 and strength >= (63 - (looseness * 20)):
-            return "all_in", None
+            jam_chance = min(0.9, max(0.35, 0.46 + (commitment_ratio * 0.5) + (aggression * 0.7)))
+            if random.random() < jam_chance:
+                return "all_in", None
         if strength >= (97 - (aggression * 25)):
-            return "all_in", None
+            jam_chance = min(0.78, max(0.28, 0.34 + ((strength - 95.0) / 16.0) + (aggression * 0.8)))
+            if random.random() < jam_chance:
+                return "all_in", None
 
     if "raise" in actions:
         min_to = float(legal_info.get("min_raise_to", 0.0) or 0.0)
@@ -200,6 +211,8 @@ def choose_bot_action(state, player_name, legal_info):
             else:
                 raise_pot_mult = 0.68
             target = max(min_to, min(max_to, max(to_call * 2.25, pot * raise_pot_mult)))
+            target *= random.uniform(0.85, 1.2)
+            target = max(min_to, min(max_to, target))
             return "raise", round(target, 2)
 
     if "call" in actions:
