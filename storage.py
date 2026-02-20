@@ -1552,10 +1552,10 @@ def delete_poker_lan_table(table_id):
         if table is None:
             return False, "Table not found."
         if bool(table.get("in_progress")):
-            return False, "Cannot delete a table during an active hand."
+            return True, "Cannot delete a table during an active hand."
         human_players = [name for name in table.get("players", []) if not _poker_is_bot_name(name, table)]
         if human_players or table.get("pending_players"):
-            return False, "Cannot delete table while players are seated or queued."
+            return True, "Cannot delete table while players are seated or queued."
         lan_state["tables"] = [entry for entry in lan_state.get("tables", []) if int(entry.get("id", -1)) != int(table_id)]
         data["poker_lan"] = lan_state
         _write_data_unlocked(data)
