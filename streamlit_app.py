@@ -4333,6 +4333,9 @@ def render_poker_single_player(account):
                 st.error(error)
                 return
             _fast_rerun(force=True)
+        if st.button("End round", key="poker_single_end_round", use_container_width=True):
+            st.session_state["poker_single_state"] = None
+            _fast_rerun(force=True)
         st.markdown("### Stacks")
         for name, amount in sorted(round_state.get("stacks", {}).items()):
             st.write(f"- {_poker_display_player_name(name)}: ${format_money(amount)}")
