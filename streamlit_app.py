@@ -4345,7 +4345,7 @@ def render_poker_single_player(account):
                 st.session_state["poker_single_state"] = None
                 _fast_rerun(force=True)
             return
-        if st.button("Deal next hand", key="poker_single_deal", use_container_width=True):
+        if st.button("Deal hand", key="poker_single_deal", use_container_width=True):
             ok, error = _start_single_player_hand(round_state)
             if not ok:
                 st.error(error)
