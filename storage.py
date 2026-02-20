@@ -902,7 +902,7 @@ POKER_LAN_PHASE_IN_HAND = "in_hand"
 POKER_LAN_PHASE_FINISHED = "finished"
 POKER_BOT_FIRST_NAMES = [
     "Liam", "Noah", "Milo", "Owen", "Ezra", "Aiden", "Leo", "Eli", "Nora", "Luna",
-    "Maya", "Zoe", "Ivy", "Aria", "Ava", "Nina", "Emma", "Chloe", "Ruby", "Mia",
+    "Maya", "Zoe", "Ivy", "Aria", "Ava", "Nina", "Emma", "Chloe", "Ruby", "Mia", "Austin", "James", "Elijah", "Benjamin", "Lucas", "Henry", "Alexander", "Jack", "Sebastian", "Ethan", "Jacob", "Michael", "Daniel", "Logan", "Jackson", "Levi",
 ]
 
 
